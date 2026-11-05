@@ -41,6 +41,11 @@ select,input[type=text],input[type=date],input[type=url],input[type=number]{back
 main{padding:14px 16px 60px}
 .notice{background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--warn);padding:10px 12px;border-radius:8px;margin-bottom:12px;color:var(--text-secondary);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px}
+.grid.wide{grid-template-columns:repeat(auto-fill,minmax(620px,1fr))}
+@media (max-width:700px){.grid.wide{grid-template-columns:1fr}}
+.sl{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);overflow-x:auto}
+.sl table{font-size:11.5px}.sl th,.sl td{padding:3px 4px}.sl th{background:transparent}
+.bonus{font-weight:700;color:var(--warn)}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
 .card:hover{border-color:#55544e}
 .card.live{border-left:3px solid var(--live)}
@@ -146,6 +151,7 @@ tr.dnp td{color:var(--text-muted)}
       <option value="move">Sort: biggest line movement</option>
       <option value="conf">Sort: conference</option>
     </select>
+    <div class="chips" id="viewChips"><button class="btn sm on" data-cv="compact">Compact cards</button><button class="btn sm" data-cv="stats">Stats cards</button></div>
     <label style="font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="rankedOnly"> Ranked only</label>
     <input type="text" id="search" placeholder="Search team…" style="width:150px">
   </div>
@@ -198,7 +204,7 @@ const S = {
   open: null, openTab: 'overview',
   health: { scoreboard: {}, summary: {}, odds: {}, proxy: {}, priors: {} },
   extraOdds: new Map(), // gid -> [{book, ...}]
-  settings: loadSettings(),
+  settings: loadSettings(), cardView: (() => { try { return localStorage.getItem('hl.cardView') || 'compact'; } catch { return 'compact'; } })(),
   lastSnap: new Map(), oddsSeen: new Map(),
 };
 
@@ -781,6 +787,41 @@ function coverText(g, ln){
   if (ln.total != null){ const tot = h + a; out.push(g.status === 'post' ? `Total ${tot} — ${tot > ln.total ? 'OVER' : tot < ln.total ? 'UNDER' : 'PUSH'} ${ln.total}` : `Total ${tot} vs ${ln.total} line`); }
   return `<div class="cover">${out.join(' · ')}</div>`;
 }
+/* ---------- live stat line ---------- */
+function statLine(g, det, side){
+  const isH = side === 'home'; const t = isH ? det.totH : det.totA, o = isH ? det.totA : det.totH;
+  const tid = g[side].id, oid = g[isH ? 'away' : 'home'].id;
+  const poss = det.poss ? (isH ? det.poss.h : det.poss.a) : estPoss(t);
+  const L = luckFor(t, S.priors.get(tid));
+  let rim = null;
+  if (det.plays && det.plays.some(p => p.kind === 'fg' && p.team === tid)){ let m = 0, a = 0; for (const p of det.plays){ if (p.kind === 'fg' && p.team === tid && (p.shot === 'dunk' || p.shot === 'layup' || p.shot === 'tip')){ a++; if (p.made) m++; } } rim = { m, a }; }
+  const half = g.status === 'half' ? null : g.period;
+  const foulsHalf = det.plays && det.plays.length && half ? teamFoulsThisHalf(det.plays, tid, half) : null;
+  const oppHalf = det.plays && det.plays.length && half ? teamFoulsThisHalf(det.plays, oid, half) : null;
+  let bonus = '—';
+  if (g.status === 'half') bonus = 'Resets 2H'; else if (g.status === 'in' && oppHalf != null) bonus = oppHalf >= 10 ? '<span class="bonus">Double bonus</span>' : oppHalf >= 7 ? '<span class="bonus">Bonus</span>' : `${7 - oppHalf} to bonus`;
+  else if (g.status === 'in') bonus = NA;
+  return { efg: t.fga ? (t.fgm + 0.5*t.tpm)/t.fga : null, tov: poss && t.to != null ? t.to/poss : null,
+    orb: t.orb != null && o.drb != null && (t.orb + o.drb) ? t.orb/(t.orb + o.drb) : null, ftr: t.fga ? t.fta/t.fga : null,
+    rim, tpr: t.fga ? t.tpa/t.fga : null, tpm: t.tpm, tpa: t.tpa, d3: L ? L.d3 : null, ftm: t.ftm, fta: t.fta, dF: L ? L.dF : null,
+    pf: t.pf, foulsHalf, bonus };
+}
+const SL_COLS = [['eFG%','Effective FG%: (FGM + 0.5×3PM) ÷ FGA'],['TO%','Turnovers per possession'],['OR%','Offensive rebound %: ORB ÷ (ORB + opponent DRB)'],['FTA/FGA','Free-throw rate'],
+  ['RIM','Shots at the rim (dunks, layups, tips) made-attempted from play-by-play'],['3PA%','Share of field-goal attempts that are threes'],['3PT','Threes made-attempted (3P%)'],
+  ['3 VAR','3-point points vs expected from team history (model estimate; + = hot)'],['FT','Free throws made-attempted (FT%)'],['FT VAR','Free-throw points vs expected from team history (model estimate)'],
+  ['Fouls','Team fouls: game total (this half, from play-by-play)'],['Bonus','Bonus status this half: 7 opponent fouls = bonus (1-and-1), 10 = double bonus']];
+function slCells(s){
+  const ma = (m, a) => m == null || a == null ? NA : `${m}-${a}${a ? ` <small style="color:var(--text-muted)">${Math.round(m/a*100)}%</small>` : ''}`;
+  const v = (x) => x == null ? NA : `<span class="model ${x >= 3 ? 'warn' : x <= -3 ? 'warn' : ''}">${sgn(x)}</span>`;
+  return [pct(s.efg), pct(s.tov), pct(s.orb), pct(s.ftr), s.rim ? ma(s.rim.m, s.rim.a) : NA, pct(s.tpr), ma(s.tpm, s.tpa), v(s.d3), ma(s.ftm, s.fta), v(s.dF),
+    s.pf == null ? NA : `${s.pf}${s.foulsHalf != null ? ` <small style="color:var(--text-muted)">(${s.foulsHalf})</small>` : ''}`, s.bonus];
+}
+function statLineTable(g, det){
+  if (!det || !det.hasBox) return null;
+  const row = side => `<tr><td><b>${esc(g[side].abbr || g[side].short)}</b></td>${slCells(statLine(g, det, side)).map(c => `<td class="num">${c}</td>`).join('')}</tr>`;
+  return `<table><thead><tr><th></th>${SL_COLS.map(([c, t]) => `<th title="${esc(t)}">${c}</th>`).join('')}</tr></thead><tbody>${row('away')}${row('home')}</tbody></table>`;
+}
+
 function card(g){
   const p = S.proj.get(g.gid); const det = S.details.get(g.gid); const ln = currentLine(g);
   const live = g.status === 'in' || g.status === 'half';
@@ -802,6 +843,7 @@ function card(g){
       <div title="Adjusted Luck Rating: which team's result is more inflated by shooting luck (model estimate)"><span>Luck edge</span><b>${luckTxt}</b></div>
     </div>
     ${coverText(g, ln)}
+    ${S.cardView === 'stats' && g.status !== 'pre' && g.status !== 'other' ? `<div class="sl">${statLineTable(g, det) || `<span class="na">${det ? 'No box score published yet' : 'Loading stats…'}</span>`}</div>` : ''}
     <div class="upd">Score ${tm(g.ts)}${det ? ' · Box ' + tm(det.ts) : ''}${ln ? ' · Odds ' + tm(ln.ts) : ' · No odds posted'}</div>
   </div>`;
 }
@@ -832,7 +874,7 @@ function renderBoard(){
   if (S.health.scoreboard.err && !S.health.scoreboard.ok) notice.push(`Could not reach the ESPN scoreboard feed (${esc(S.health.scoreboard.err)}). Nothing is shown rather than placeholder data. It will keep retrying.`);
   else if (S.health.scoreboard.err && S.health.scoreboard.errAt > (S.health.scoreboard.ok || 0)) notice.push(`Latest scoreboard refresh failed (${esc(S.health.scoreboard.err)}) — showing data from ${tm(S.health.scoreboard.ok)}.`);
   m.innerHTML = (notice.length ? `<div class="notice">${notice.join('<br>')}</div>` : '') +
-    (S.loading && !S.games.size ? '<div class="empty">Loading games…</div>' : list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<div class="empty">${S.games.size ? 'No games match these filters.' : 'No D1 games found for this date.'}</div>`);
+    (S.loading && !S.games.size ? '<div class="empty">Loading games…</div>' : list.length ? `<div class="grid ${S.cardView === 'stats' ? 'wide' : ''}">${list.map(card).join('')}</div>` : `<div class="empty">${S.games.size ? 'No games match these filters.' : 'No D1 games found for this date.'}</div>`);
   renderStatus();
 }
 function renderStatus(){
@@ -902,7 +944,8 @@ function tabOverview(g, det){
   const A = g.away.abbr, H = g.home.abbr;
   if (p.final){
     const h = g.home.score, a = g.away.score, ln = g.pregameLine || g.odds;
-    return `<div class="section"><h3>Final</h3><div class="tiles">
+    const sltF = statLineTable(g, det);
+    return (sltF ? `<div class="section"><h3>Stat line</h3><div class="tw">${sltF}</div></div>` : '') + `<div class="section"><h3>Final</h3><div class="tiles">
       <div class="tile"><span>Final score</span><b>${esc(A)} ${a} – ${h} ${esc(H)}</b></div>
       <div class="tile"><span>Total</span><b>${h + a}</b>${ln && ln.total != null ? `<em>Line ${ln.total} → ${h + a > ln.total ? 'OVER' : h + a < ln.total ? 'UNDER' : 'PUSH'}</em>` : ''}</div>
       <div class="tile"><span>Pregame model total <span class="tag">MODEL</span></span><b>${f1(p.pre.h + p.pre.a)}</b><em>${esc(p.pre.src)}</em></div>
@@ -910,7 +953,9 @@ function tabOverview(g, det){
   }
   const ln = p.line; const live = g.status !== 'pre';
   const favCover = ln && ln.homeSpread != null ? (ln.homeSpread <= 0 ? [H, p.pCoverH] : [A, 1 - p.pCoverH - (p.pPush || 0)]) : null;
-  let h = `<div class="section"><h3>Projected final <small>— ${p.n.toLocaleString()} Monte Carlo simulations of the remaining game · model estimate, not observed data</small></h3><div class="tiles">
+  const slt = statLineTable(g, det);
+  let h = slt ? `<div class="section"><h3>Live stat line <small>— hover a column header for its definition</small></h3><div class="tw">${slt}</div></div>` : '';
+  h += `<div class="section"><h3>Projected final <small>— ${p.n.toLocaleString()} Monte Carlo simulations of the remaining game · model estimate, not observed data</small></h3><div class="tiles">
     <div class="tile"><span>Projected score <span class="tag">MODEL</span></span><b>${esc(A)} ${f1(p.projA)} – ${f1(p.projH)} ${esc(H)}</b></div>
     <div class="tile"><span>Projected total <span class="tag">MODEL</span></span><b>${f1(p.projT)}</b><em>80% range ${p.t10}–${p.t90}</em></div>
     <div class="tile"><span>Projected margin (${esc(H)}) <span class="tag">MODEL</span></span><b>${sgn(p.projM)}</b><em>80% range ${sgn(p.m10, 0)} to ${sgn(p.m90, 0)}</em></div>
@@ -1210,6 +1255,7 @@ async function refreshSummaries(){
   const stale = live.filter(g => g.gid !== S.open && (!S.details.has(g.gid) || now - S.details.get(g.gid).ts > Math.max(30e3, S.settings.refresh*2e3)));
   stale.sort((a, b) => (S.details.get(a.gid)?.ts || 0) - (S.details.get(b.gid)?.ts || 0));
   jobs.push(...stale.slice(0, 6).map(g => g.gid));
+  if (S.cardView === 'stats') jobs.push(...[...S.games.values()].filter(g => g.status === 'post' && !S.details.has(g.gid) && !jobs.includes(g.gid)).slice(0, 4).map(g => g.gid));
   // finished games just went final: one last pull for final poss
   for (const g of S.games.values()) if (g.status === 'post' && S.details.has(g.gid) && !S.details.get(g.gid).finalPulled && S.date === todayStr()){ jobs.push(g.gid); S.details.get(g.gid).finalPulled = true; }
   await Promise.all(jobs.map(gid => fetchSummary(gid).then(d => { const g = S.games.get(gid); if (g){ if (g.status === 'post') d.finalPulled = true; recompute(g); for (const o of d.pick) recordOdds(g, o); } }).catch(() => {})));
@@ -1237,12 +1283,15 @@ document.addEventListener('click', e => {
   if (t.closest('[data-closegame]') || t.id === 'overlay'){ closeGame(); return; }
   const tab = t.closest('[data-tab]'); if (tab){ S.openTab = tab.dataset.tab; renderDetail(); return; }
   const day = t.closest('[data-day]'); if (day && day.classList.contains('day')){ loadDate(day.dataset.day); return; }
+  const cv = t.closest('[data-cv]'); if (cv){ S.cardView = cv.dataset.cv; try { localStorage.setItem('hl.cardView', S.cardView); } catch {} syncCv(); renderBoard(); if (S.cardView === 'stats') refreshSummaries(); return; }
   const st = t.closest('[data-st]'); if (st){ S.filter.st = st.dataset.st; document.querySelectorAll('[data-st]').forEach(b => b.classList.toggle('on', b === st)); renderBoard(); return; }
   const v = t.closest('[data-view]'); if (v){ S.view = v.dataset.view; document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b === v)); document.getElementById('filters').style.display = S.view === 'board' ? '' : 'none'; S.view === 'board' ? renderBoard() : renderPerf(); return; }
   const hist = t.closest('[data-hist]'); if (hist){ const gid = hist.dataset.hist, dd = hist.dataset.day; S.view = 'board'; document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === 'board')); document.getElementById('filters').style.display = '';
     (dd && dd !== S.date ? loadDate(dd) : Promise.resolve()).then(() => { S.openTab = 'timeline'; openGame(gid); }); return; }
   if (t.closest('[data-close]')) document.getElementById('settings').classList.remove('open');
 });
+function syncCv(){ document.querySelectorAll('[data-cv]').forEach(b => b.classList.toggle('on', b.dataset.cv === S.cardView)); }
+syncCv();
 document.addEventListener('keydown', e => { if (e.key === 'Escape'){ closeGame(); document.getElementById('settings').classList.remove('open'); } });
 document.getElementById('prevDay').onclick = () => loadDate(addDays(S.date, -1));
 document.getElementById('nextDay').onclick = () => loadDate(addDays(S.date, 1));
