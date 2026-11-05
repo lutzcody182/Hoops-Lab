@@ -45,6 +45,8 @@ main{padding:14px 16px 60px}
 @media (max-width:700px){.grid.wide{grid-template-columns:1fr}}
 .sl{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);overflow-x:auto}
 .sl table{font-size:11.5px}.sl th,.sl td{padding:3px 4px}.sl th{background:transparent}
+.tm5{display:grid;grid-template-columns:repeat(5,1fr);gap:4px 8px;margin-top:6px;padding:6px 8px;background:var(--surface-2);border-radius:8px;font-size:12px}
+.tm5 span{display:block;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px}
 .bonus{font-weight:700;color:var(--warn)}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
 .card:hover{border-color:#55544e}
@@ -822,6 +824,31 @@ function statLineTable(g, det){
   return `<table><thead><tr><th></th>${SL_COLS.map(([c, t]) => `<th title="${esc(t)}">${c}</th>`).join('')}</tr></thead><tbody>${row('away')}${row('home')}</tbody></table>`;
 }
 
+/* Current total, pace-extrapolated total, model-adjusted total; current margin and luck-adjusted margin */
+function totalsMargins(g){
+  const h = g.home.score, a = g.away.score; if (h == null || a == null || g.status === 'pre' || g.status === 'other') return null;
+  const p = S.proj.get(g.gid), det = S.details.get(g.gid);
+  const el = gameElapsed(g), cur = h + a, mar = h - a;
+  const rem = g.status === 'post' ? 0 : g.status === 'half' ? 1200 : remainingOf(g.period || 1, g.clock ?? 0);
+  const paceT = g.status === 'post' ? cur : el >= 120 ? cur*(el + rem)/el : null;
+  const adjT = g.status === 'post' ? cur : p && p.projT != null ? p.projT : null;
+  let lh = p && p.luckH, la = p && p.luckA;
+  if ((!lh || !la) && det && det.hasBox){ lh = luckFor(det.totH, S.priors.get(g.home.id)); la = luckFor(det.totA, S.priors.get(g.away.id)); }
+  const adjMar = lh && la ? mar - (lh.luck - la.luck) : null;
+  return { cur, paceT, adjT, mar, adjMar, final: g.status === 'post' };
+}
+function marTxt(g, m, d = 0){ if (m == null) return NA; if (Math.abs(m) < 0.05) return 'Tied'; return `${esc((m > 0 ? g.home : g.away).abbr)} +${Math.abs(m).toFixed(d)}`; }
+function tmStrip(g){
+  const t = totalsMargins(g); if (!t) return '';
+  return `<div class="tm5">
+    <div title="Points scored so far"><span>${t.final ? 'Final total' : 'Total now'}</span><b>${t.cur}</b></div>
+    <div title="Current points extrapolated at the current scoring pace to the end of the game"><span>Pace total</span><b>${t.final ? '—' : t.paceT != null ? t.paceT.toFixed(1) : '—'}</b></div>
+    <div title="Model projection: luck-adjusted efficiency, blended pace, end-game fouling and overtime (model estimate)"><span>Adj total</span><b class="model">${t.final ? '—' : t.adjT != null ? t.adjT.toFixed(1) : '—'}</b></div>
+    <div title="Current scoring margin"><span>Margin</span><b>${marTxt(g, t.mar)}</b></div>
+    <div title="Current margin with the luck share of both teams' shooting removed (model estimate)"><span>Luck-adj margin</span><b class="model">${t.adjMar != null ? marTxt(g, t.adjMar, 1) : '—'}</b></div>
+  </div>`;
+}
+
 function card(g){
   const p = S.proj.get(g.gid); const det = S.details.get(g.gid); const ln = currentLine(g);
   const live = g.status === 'in' || g.status === 'half';
@@ -842,6 +869,7 @@ function card(g){
       <div title="Model estimate"><span>Win% ${esc(g.home.abbr)}</span><b class="model">${p && p.pHome != null ? pct(p.pHome, 0) : '—'}</b></div>
       <div title="Adjusted Luck Rating: which team's result is more inflated by shooting luck (model estimate)"><span>Luck edge</span><b>${luckTxt}</b></div>
     </div>
+    ${tmStrip(g)}
     ${coverText(g, ln)}
     ${S.cardView === 'stats' && g.status !== 'pre' && g.status !== 'other' ? `<div class="sl">${statLineTable(g, det) || `<span class="na">${det ? 'No box score published yet' : 'Loading stats…'}</span>`}</div>` : ''}
     <div class="upd">Score ${tm(g.ts)}${det ? ' · Box ' + tm(det.ts) : ''}${ln ? ' · Odds ' + tm(ln.ts) : ' · No odds posted'}</div>
@@ -945,7 +973,8 @@ function tabOverview(g, det){
   if (p.final){
     const h = g.home.score, a = g.away.score, ln = g.pregameLine || g.odds;
     const sltF = statLineTable(g, det);
-    return (sltF ? `<div class="section"><h3>Stat line</h3><div class="tw">${sltF}</div></div>` : '') + `<div class="section"><h3>Final</h3><div class="tiles">
+    const TMF = totalsMargins(g);
+    return (TMF ? `<div class="section"><h3>Margin</h3><div class="tiles"><div class="tile"><span>Final margin</span><b>${marTxt(g, TMF.mar)}</b></div><div class="tile"><span>Luck-adjusted margin <span class="tag">MODEL</span></span><b>${TMF.adjMar != null ? marTxt(g, TMF.adjMar, 1) : '—'}</b><em>What the margin looks like with shooting luck removed</em></div></div></div>` : '') + (sltF ? `<div class="section"><h3>Stat line</h3><div class="tw">${sltF}</div></div>` : '') + `<div class="section"><h3>Final</h3><div class="tiles">
       <div class="tile"><span>Final score</span><b>${esc(A)} ${a} – ${h} ${esc(H)}</b></div>
       <div class="tile"><span>Total</span><b>${h + a}</b>${ln && ln.total != null ? `<em>Line ${ln.total} → ${h + a > ln.total ? 'OVER' : h + a < ln.total ? 'UNDER' : 'PUSH'}</em>` : ''}</div>
       <div class="tile"><span>Pregame model total <span class="tag">MODEL</span></span><b>${f1(p.pre.h + p.pre.a)}</b><em>${esc(p.pre.src)}</em></div>
@@ -953,8 +982,15 @@ function tabOverview(g, det){
   }
   const ln = p.line; const live = g.status !== 'pre';
   const favCover = ln && ln.homeSpread != null ? (ln.homeSpread <= 0 ? [H, p.pCoverH] : [A, 1 - p.pCoverH - (p.pPush || 0)]) : null;
-  const slt = statLineTable(g, det);
-  let h = slt ? `<div class="section"><h3>Live stat line <small>— hover a column header for its definition</small></h3><div class="tw">${slt}</div></div>` : '';
+  const slt = statLineTable(g, det); const TM = totalsMargins(g);
+  const tmSec = TM ? `<div class="section"><h3>Totals & margin</h3><div class="tiles">
+    <div class="tile"><span>Current total</span><b>${TM.cur}</b><em>${esc(A)} ${g.away.score} + ${esc(H)} ${g.home.score}</em></div>
+    <div class="tile"><span>Total at current pace</span><b>${TM.paceT != null ? TM.paceT.toFixed(1) : '—'}</b><em>${TM.paceT != null ? 'Current points × full game ÷ time played' : 'Shown after 2 minutes of play'}</em></div>
+    <div class="tile"><span>Adjusted projected total <span class="tag">MODEL</span></span><b>${TM.adjT != null ? TM.adjT.toFixed(1) : '—'}</b><em>Luck-adjusted, blended pace, end-game fouling & OT${ln && ln.total != null ? ` · line ${ln.total}` : ''}</em></div>
+    <div class="tile"><span>Current margin</span><b>${marTxt(g, TM.mar)}</b><em>observed</em></div>
+    <div class="tile"><span>Luck-adjusted margin <span class="tag">MODEL</span></span><b>${TM.adjMar != null ? marTxt(g, TM.adjMar, 1) : '—'}</b><em>${TM.adjMar != null ? `Shooting-luck swing ${sgn(TM.mar - TM.adjMar)} for ${esc(H)}` : 'Needs a box score'}</em></div>
+  </div></div>` : '';
+  let h = tmSec + (slt ? `<div class="section"><h3>Live stat line <small>— hover a column header for its definition</small></h3><div class="tw">${slt}</div></div>` : '');
   h += `<div class="section"><h3>Projected final <small>— ${p.n.toLocaleString()} Monte Carlo simulations of the remaining game · model estimate, not observed data</small></h3><div class="tiles">
     <div class="tile"><span>Projected score <span class="tag">MODEL</span></span><b>${esc(A)} ${f1(p.projA)} – ${f1(p.projH)} ${esc(H)}</b></div>
     <div class="tile"><span>Projected total <span class="tag">MODEL</span></span><b>${f1(p.projT)}</b><em>80% range ${p.t10}–${p.t90}</em></div>
