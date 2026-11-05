@@ -66,7 +66,7 @@ jobs:
           const html = fs.readFileSync(env('INDEX_PATH') || 'index.html', 'utf8');
           const core = html.slice(html.indexOf('<script>') + 8, html.indexOf('/*@@CORE_END@@*/'));
           if (core.length < 1000) throw new Error('Could not find the dashboard code in index.html (missing @@CORE_END@@ marker?)');
-          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE };')();
+          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE, gameEvents, badBeats };')();
           const { S } = H;
           S.settings.book = env('PREFERRED_BOOK') || 'fanduel';
           S.settings.sims = 1000;
@@ -238,6 +238,12 @@ jobs:
               status.snaps++;
               await checkAlerts(D, g, p);
             }
+            // Feed: comebacks, late finishes, overtime and bad beats (from play-by-play)
+            D.feed = D.feed || {};
+            for (const g of [...live, ...finishing]){ const det = S.details.get(g.gid); if (!det) continue;
+              try { for (const e of [...H.gameEvents(g, det), ...H.badBeats(g, det)]) D.feed[e.key] = e; } catch (e){ status.errors.push(`feed ${g.gid}: ${e.message}`); } }
+            // drop live-only items that no longer apply (e.g. a comeback that was reversed)
+            for (const [k, e] of Object.entries(D.feed)){ const g = S.games.get(e.gid); if (!g || g.status === 'post') continue; const det = S.details.get(e.gid); if (det && !H.gameEvents(g, det).some(x => x.key === k)) delete D.feed[k]; }
             D.updated = now;
             writeJ(file, D);
           }
