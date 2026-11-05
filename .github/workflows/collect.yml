@@ -66,7 +66,7 @@ jobs:
           const html = fs.readFileSync(env('INDEX_PATH') || 'index.html', 'utf8');
           const core = html.slice(html.indexOf('<script>') + 8, html.indexOf('/*@@CORE_END@@*/'));
           if (core.length < 1000) throw new Error('Could not find the dashboard code in index.html (missing @@CORE_END@@ marker?)');
-          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE, gameEvents, badBeats };')();
+          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE, gameEvents, badBeats, clutchStats };')();
           const { S } = H;
           S.settings.book = env('PREFERRED_BOOK') || 'fanduel';
           S.settings.sims = 1000;
@@ -91,7 +91,10 @@ jobs:
             if (ids.has(g.gid) || !det || !det.hasBox) return;
             const hp = H.estPoss(det.totH), ap = H.estPoss(det.totA);
             if (!hp || !ap || g.home.score == null || g.away.score == null) return;
-            LOG.games.push({ gid: g.gid, day, h: g.home.id, a: g.away.id, hs: g.home.score, as: g.away.score, hp: +hp.toFixed(1), ap: +ap.toFixed(1), n: g.neutral ? 1 : 0, ot: g.period > 2 ? g.period - 2 : 0 });
+            const box = t => ({ fga: t.fga, fgm: t.fgm, tpm: t.tpm, tpa: t.tpa, fta: t.fta, ftm: t.ftm, to: t.to, orb: t.orb, drb: t.drb });
+            let cl = null; try { const c = H.clutchStats(det, g); if (c && c.any) cl = { hp: c.h.pts, ap: c.a.pts, hpos: c.h.poss, apos: c.a.poss, sec: Math.round(c.sec) }; } catch {}
+            LOG.games.push({ gid: g.gid, day, h: g.home.id, a: g.away.id, hs: g.home.score, as: g.away.score, hp: +hp.toFixed(1), ap: +ap.toFixed(1), n: g.neutral ? 1 : 0, ot: g.period > 2 ? g.period - 2 : 0,
+              h1: [g.home.lines[0] ?? null, g.away.lines[0] ?? null], h2: [g.home.lines[1] ?? null, g.away.lines[1] ?? null], bh: box(det.totH), ba: box(det.totA), cl });
             ids.add(g.gid);
           }
           async function backfillLog(LOG, ids){
@@ -140,8 +143,33 @@ jobs:
               }
               R = N;
             }
+            // Season profiles: strength of schedule, clutch, halftime adjustment, four factors (offense & defense)
+            const prof = {};
+            const P = id => prof[id] = prof[id] || { sos: [], cl: { pf: 0, pa: 0, pos: 0, opos: 0, g: 0, w: 0, l: 0 }, h1: [], h2: [], o: { fga: 0, fgm: 0, tpm: 0, fta: 0, to: 0, orb: 0, oppDrb: 0, poss: 0 }, d: { fga: 0, fgm: 0, tpm: 0, fta: 0, to: 0, orb: 0, oppDrb: 0, poss: 0 } };
+            for (const x of games){
+              for (const [me, op, home] of [[x.h, x.a, true], [x.a, x.h, false]]){
+                const q = P(me), r = R[op]; if (r) q.sos.push(r.o - r.d);
+                if (x.cl){ const pf = home ? x.cl.hp : x.cl.ap, pa = home ? x.cl.ap : x.cl.hp, pos = home ? x.cl.hpos : x.cl.apos, opos = home ? x.cl.apos : x.cl.hpos;
+                  q.cl.pf += pf; q.cl.pa += pa; q.cl.pos += pos; q.cl.opos += opos; q.cl.g++; const won = home ? x.hs > x.as : x.as > x.hs; won ? q.cl.w++ : q.cl.l++; }
+                if (x.h1 && x.h1[0] != null && x.h2 && x.h2[0] != null){ q.h1.push(home ? x.h1[0] - x.h1[1] : x.h1[1] - x.h1[0]); q.h2.push(home ? x.h2[0] - x.h2[1] : x.h2[1] - x.h2[0]); }
+                const mb = home ? x.bh : x.ba, ob = home ? x.ba : x.bh;
+                if (mb && ob && mb.fga != null && ob.fga != null){ const add = (t, b, oppB) => { t.fga += b.fga || 0; t.fgm += b.fgm || 0; t.tpm += b.tpm || 0; t.fta += b.fta || 0; t.to += b.to || 0; t.orb += b.orb || 0; t.oppDrb += oppB.drb || 0; t.poss += possOf(x); };
+                  add(q.o, mb, ob); add(q.d, ob, mb); }
+              }
+            }
+            const ff = t => t.fga ? { efg: (t.fgm + 0.5*t.tpm)/t.fga, tov: t.poss ? t.to/t.poss : null, orb: (t.orb + t.oppDrb) ? t.orb/(t.orb + t.oppDrb) : null, ftr: t.fta/t.fga } : null;
             const out = {}; const ranked = [...teams].filter(id => d1.has(id) || !d1.size).sort((a, b) => (R[b].o - R[b].d) - (R[a].o - R[a].d));
-            ranked.forEach((id, i) => { const r = R[id]; out[id] = { o: +r.o.toFixed(2), d: +r.d.toFixed(2), t: +r.t.toFixed(2), net: +(r.o - r.d).toFixed(2), rk: i + 1, gp: (byTeam[id] || []).length, prior: prior[id].known ? 1 : 0 }; });
+            const rd = (v, k = 3) => v == null || !isFinite(v) ? null : +v.toFixed(k);
+            ranked.forEach((id, i) => { const r = R[id], q = prof[id];
+              out[id] = { o: +r.o.toFixed(2), d: +r.d.toFixed(2), t: +r.t.toFixed(2), net: +(r.o - r.d).toFixed(2), rk: i + 1, gp: (byTeam[id] || []).length, prior: prior[id].known ? 1 : 0 };
+              if (q){
+                if (q.sos.length) out[id].sos = rd(mean(q.sos), 2);
+                if (q.cl.g) out[id].cl = { g: q.cl.g, w: q.cl.w, l: q.cl.l, pf: q.cl.pf, pa: q.cl.pa, o: q.cl.pos ? rd(q.cl.pf / q.cl.pos * 100, 1) : null, d: q.cl.opos ? rd(q.cl.pa / q.cl.opos * 100, 1) : null, pos: q.cl.pos };
+                if (q.h1.length) out[id].half = { g: q.h1.length, h1: rd(mean(q.h1), 2), h2: rd(mean(q.h2), 2), adj: rd(mean(q.h2) - mean(q.h1), 2) };
+                const fo = ff(q.o), fd = ff(q.d); if (fo && fd) out[id].ff = { o: { efg: rd(fo.efg), tov: rd(fo.tov), orb: rd(fo.orb), ftr: rd(fo.ftr) }, d: { efg: rd(fd.efg), tov: rd(fd.tov), orb: rd(fd.orb), ftr: rd(fd.ftr) } };
+              } });
+            // ranks for SOS
+            const sosR = ranked.filter(id => out[id].sos != null).sort((a, b) => out[b].sos - out[a].sos); sosR.forEach((id, i) => out[id].sosRk = i + 1);
             return { updated: Date.now(), season: LOG.season, games: games.length, lg: { eff: +lgEff.toFixed(2), t: +lgT.toFixed(2) }, teams: out,
               method: 'Opponent- and home-court-adjusted offense/defense (points per 100 possessions) and tempo, iterated over every D1-vs-D1 game; last season regressed 35% to average counts as 5 games; recent games weighted more (45-day half-life).' };
           }
@@ -304,7 +332,7 @@ jobs:
           (async () => {
             S.date = today;
             const season = H.currentSeason();
-            LOG = readJ('log.json', null); if (!LOG || LOG.season !== season) LOG = { season, done: {}, games: [] };
+            LOG = readJ('log.json', null); if (!LOG || LOG.season !== season || LOG.v !== 2) LOG = { season, v: 2, done: {}, games: [] };
             LOG_IDS = new Set(LOG.games.map(x => x.gid));
             const st = await H.loadStandings(season); if (st) for (const [id, c] of Object.entries(st.conf)) S.conf.set(id, c);
             await backfillLog(LOG, LOG_IDS);
