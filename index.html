@@ -170,8 +170,10 @@ tr.dnp td{color:var(--text-muted)}
   <input type="number" id="setRefresh" min="5" max="60">
   <label>Simulations per projection</label>
   <select id="setSims"><option>500</option><option>1000</option><option>2000</option><option>4000</option></select>
-  <label>Extra sportsbook feed URL (optional — your own backend proxy returning The Odds API v4 JSON, e.g. for FanDuel). Never paste an API key here.</label>
+  <label>Sportsbook feed URL — your Cloudflare Worker, e.g. https://hoops-lab-odds.yourname.workers.dev/ncaab-odds (never paste an API key here)</label>
   <input type="url" id="setProxy" placeholder="https://your-worker.workers.dev/ncaab-odds">
+  <label>Preferred sportsbook for card lines, cover status and model probabilities</label>
+  <select id="setBook"><option value="fanduel">FanDuel</option><option value="draftkings">DraftKings</option><option value="williamhill_us">Caesars</option><option value="fanatics">Fanatics</option><option value="espnbet">theScore Bet</option></select>
   <label>Extra feed poll interval (seconds, min 60)</label>
   <input type="number" id="setProxyEvery" min="60" max="900">
   <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
@@ -205,13 +207,13 @@ const S = {
   priors: new Map(), // teamId -> prior object | null
   open: null, openTab: 'overview',
   health: { scoreboard: {}, summary: {}, odds: {}, proxy: {}, priors: {} },
-  extraOdds: new Map(), // gid -> [{book, ...}]
+  extraOdds: new Map(), firstSeen: new Map(), oddsQuota: null, // gid -> [{book, ...}]
   settings: loadSettings(), cardView: (() => { try { return localStorage.getItem('hl.cardView') || 'compact'; } catch { return 'compact'; } })(),
   lastSnap: new Map(), oddsSeen: new Map(),
 };
 
 function loadSettings(){
-  const d = { refresh: 15, sims: 1000, proxy: '', proxyEvery: 120 };
+  const d = { refresh: 15, sims: 1000, proxy: '', proxyEvery: 120, book: 'fanduel' };
   try { return Object.assign(d, JSON.parse(localStorage.getItem('hl.settings') || '{}')); } catch { return d; }
 }
 function saveSettingsLS(){ try { localStorage.setItem('hl.settings', JSON.stringify(S.settings)); } catch {} }
@@ -520,29 +522,45 @@ async function loadPrior(teamId){
 }
 
 /* ---------- optional extra odds feed (user's own backend proxy, The Odds API v4 shape) ---------- */
+const BOOK_KEYS = [['fanduel','FanDuel'],['draftkings','DraftKings'],['williamhill_us','Caesars'],['fanatics','Fanatics'],['espnbet','theScore Bet']];
+function nameTokens(s){ return new Set(String(s||'').toLowerCase().replace(/&/g,' and ').replace(/\(.*?\)/g,' ').replace(/\bst\b\.?/g,'state').replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(w => w && !['the','of','university'].includes(w))); }
+function nameSim(a, b){ const A = nameTokens(a), B = nameTokens(b); if (!A.size || !B.size) return 0; let n = 0; for (const w of A) if (B.has(w)) n++; return n/Math.max(A.size, B.size); }
 async function fetchProxyOdds(){
   const url = S.settings.proxy; if (!url) return;
   try {
-    const j = await Net.get(url, { timeout: 15000 }); ok('proxy');
+    const ctl = new AbortController(); const tmo = setTimeout(() => ctl.abort(), 15000);
+    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' }); clearTimeout(tmo);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(); if (j && j.error) throw new Error(j.error + (j.status ? ' ' + j.status : ''));
+    S.oddsQuota = { remaining: num(r.headers.get('X-Requests-Remaining')), used: num(r.headers.get('X-Requests-Used')), fetchedAt: Date.parse(r.headers.get('X-Fetched-At')) || null, cache: r.headers.get('X-Cache') || '' };
+    ok('proxy');
     const evs = Array.isArray(j) ? j : (j.data || []);
-    const byKey = new Map(); for (const g of S.games.values()) byKey.set(normName(g.home.name) + '|' + normName(g.away.name), g);
-    const findGame = (h, a) => { const k = normName(h) + '|' + normName(a); if (byKey.has(k)) return byKey.get(k);
-      for (const g of S.games.values()){ const H = normName(g.home.location), A = normName(g.away.location); if (H && A && normName(h).startsWith(H) && normName(a).startsWith(A)) return g; } return null; };
-    S.extraOdds.clear();
+    // Match Odds API games to ESPN games by team names (exact, then fuzzy) and start time
+    const findGame = ev => { let best = null, bs = 0; const t = Date.parse(ev.commence_time);
+      for (const g of S.games.values()){
+        if (t && Math.abs(Date.parse(g.date) - t) > 4*3600e3) continue;
+        const sh = Math.max(nameSim(ev.home_team, g.home.name), normName(ev.home_team) === normName(g.home.name) ? 1 : 0), sa = Math.max(nameSim(ev.away_team, g.away.name), normName(ev.away_team) === normName(g.away.name) ? 1 : 0);
+        const sc = Math.min(sh, sa); if (sc > bs){ bs = sc; best = g; } }
+      return bs >= 0.5 ? best : null; };
+    S.extraOdds.clear(); let matched = 0;
     for (const ev of evs){
-      const g = findGame(ev.home_team, ev.away_team); if (!g) continue; const list = [];
+      const g = findGame(ev); if (!g) continue; matched++; const list = [];
       for (const b of ev.bookmakers || []){
         const mk = k => (b.markets || []).find(m => m.key === k);
         const h2h = mk('h2h'), sp = mk('spreads'), to = mk('totals');
         const o = (m, nm) => m && (m.outcomes || []).find(x => x.name === nm);
-        const r = { src: 'proxy:' + b.key, book: b.title || b.key, ts: Date.parse(b.last_update) || Date.now(), live: Date.parse(ev.commence_time) < Date.now(),
+        const title = (BOOK_KEYS.find(k => k[0] === b.key) || [])[1] || b.title || b.key;
+        const r2 = { src: 'proxy:' + b.key, key: b.key, book: title, ts: Date.parse(b.last_update) || Date.now(), live: Date.parse(ev.commence_time) < Date.now(),
           mlH: o(h2h, ev.home_team)?.price ?? null, mlA: o(h2h, ev.away_team)?.price ?? null,
           homeSpread: o(sp, ev.home_team)?.point ?? null, spOddsH: o(sp, ev.home_team)?.price ?? null, spOddsA: o(sp, ev.away_team)?.price ?? null,
-          total: o(to, 'Over')?.point ?? null, overOdds: o(to, 'Over')?.price ?? null, underOdds: o(to, 'Under')?.price ?? null, open: {} };
-        list.push(r); recordOdds(g, r);
+          total: o(to, 'Over')?.point ?? null, overOdds: o(to, 'Over')?.price ?? null, underOdds: o(to, 'Under')?.price ?? null };
+        const fk = g.gid + '|' + b.key; if (!S.firstSeen.has(fk)) S.firstSeen.set(fk, { homeSpread: r2.homeSpread, total: r2.total, mlH: r2.mlH, mlA: r2.mlA });
+        r2.open = S.firstSeen.get(fk); r2.openIsFirstSeen = true;
+        list.push(r2); recordOdds(g, r2);
       }
       S.extraOdds.set(g.gid, list);
     }
+    S.oddsQuota.matched = matched; S.oddsQuota.events = evs.length;
   } catch (e){ bad('proxy', e); }
 }
 
@@ -642,7 +660,10 @@ function currentLine(g){
   const ex = S.extraOdds.get(g.gid) || [];
   const det = S.details.get(g.gid);
   const espn = (det && det.pick && det.pick[0]) || g.odds;
-  return ex.find(o => o.total != null || o.homeSpread != null) || espn || null;
+  const pref = S.settings.book || 'fanduel';
+  const usable = o => o && (o.total != null || o.homeSpread != null);
+  if (pref === 'draftkings' && usable(espn) && !ex.some(o => o.key === 'draftkings' && usable(o))) return espn;
+  return ex.find(o => o.key === pref && usable(o)) || ex.find(usable) || (usable(espn) ? espn : null) || null;
 }
 
 function project(g){
@@ -910,7 +931,7 @@ function renderStatus(){
   const cnt = st => [...S.games.values()].filter(g => g.status === st).length;
   const d = (o, label) => `<span><span class="dot ${o.err && (!o.ok || o.errAt > o.ok) ? 'err' : o.ok ? 'ok' : 'idle'}"></span>${label}: ${o.ok ? ago(o.ok) : o.err ? 'error' : 'idle'}${o.err && o.errAt > (o.ok || 0) ? ' (' + esc(o.err) + ')' : ''}</span>`;
   document.getElementById('statusLine').innerHTML = `<span><b>${S.games.size}</b> games · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
-    d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Extra odds feed') : '<span>Extra odds feed: not configured</span>') +
+    d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Sportsbook feed') + (S.oddsQuota ? `<span>Odds API credits left: <b>${S.oddsQuota.remaining ?? '?'}</b> · ${S.oddsQuota.matched ?? 0}/${S.oddsQuota.events ?? 0} games matched</span>` : '') : '<span>Sportsbook feed: not configured (DraftKings via ESPN only)</span>') +
     `<span><span class="model">dotted</span> / <span class="tag">MODEL</span> = model estimate</span><span>Auto-refresh: ${anyLive() ? S.settings.refresh + 's (live)' : S.date === todayStr() ? '60s' : 'off (past/future date)'}</span>`;
 }
 function fillConfSelect(){
@@ -1145,11 +1166,11 @@ function tabOdds(g, det){
   if (!books.length) return `<div class="section"><h3>Betting lines</h3>No lines have been posted for this game in the available feeds. ${S.settings.proxy ? '' : 'Add your FanDuel/DraftKings feed in Settings to check another source.'}</div>`;
   const rows = books.map(o => { const [ih, ia] = devig(o.mlH, o.mlA);
     return `<tr><td>${esc(o.book)}${o.src === 'espn' ? ' <small class="na" style="font-style:normal">via ESPN</small>' : ''}</td>
-      <td class="num">${o.open?.homeSpread != null ? line(o.open.homeSpread) : NA}</td><td class="num"><b>${line(o.homeSpread)}</b> <small>${o.spOddsH != null ? '(' + odds(o.spOddsH) + ')' : ''}</small></td>
-      <td class="num">${o.open?.total ?? NA}</td><td class="num"><b>${o.total ?? NA}</b> <small>${o.overOdds != null ? '(' + odds(o.overOdds) + '/' + odds(o.underOdds) + ')' : ''}</small></td>
+      <td class="num">${o.open?.homeSpread != null ? line(o.open.homeSpread) + (o.openIsFirstSeen ? '*' : '') : NA}</td><td class="num"><b>${line(o.homeSpread)}</b> <small>${o.spOddsH != null ? '(' + odds(o.spOddsH) + ')' : ''}</small></td>
+      <td class="num">${o.open?.total != null ? o.open.total + (o.openIsFirstSeen ? '*' : '') : NA}</td><td class="num"><b>${o.total ?? NA}</b> <small>${o.overOdds != null ? '(' + odds(o.overOdds) + '/' + odds(o.underOdds) + ')' : ''}</small></td>
       <td class="num">${odds(o.mlA)} / ${odds(o.mlH)}</td><td class="num">${ia != null ? pct(ia, 1) + ' / ' + pct(ih, 1) : NA}</td><td>${tm(o.ts)}</td></tr>`; }).join('');
   let h = `<div class="section"><h3>Lines <small>— spread shown for ${esc(g.home.abbr)} (home); moneyline and implied win % shown ${esc(g.away.abbr)} / ${esc(g.home.abbr)}, no-vig</small></h3><div class="tw"><table><thead><tr><th>Book</th><th>Open spread</th><th>Current spread</th><th>Open total</th><th>Current total</th><th>Moneyline</th><th>Implied win %</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="note">“Current” is the latest value in the feed when it was last pulled. ESPN publishes DraftKings odds; whether ESPN's number is a live in-game line or the pregame close depends on what ESPN carries for that game. “Open” comes from the feed when supplied; otherwise see the movement chart, which starts from the first value this dashboard saw.</div></div>`;
+    <div class="note">“Current” is the latest value in the feed when it was last pulled. ESPN publishes DraftKings odds; whether ESPN's number is a live in-game line or the pregame close depends on what ESPN carries for that game. * = first value this dashboard saw (The Odds API doesn't supply opening lines). “Open” comes from the feed when supplied; otherwise see the movement chart, which starts from the first value this dashboard saw.</div></div>`;
   const ln = currentLine(g);
   if (ln && g.home.score != null && g.status !== 'pre'){
     const mar = g.home.score - g.away.score, tot = g.home.score + g.away.score;
@@ -1338,12 +1359,12 @@ document.getElementById('confSel').onchange = e => { S.filter.conf = e.target.va
 document.getElementById('sortSel').onchange = e => { S.filter.sort = e.target.value; renderBoard(); };
 document.getElementById('rankedOnly').onchange = e => { S.filter.ranked = e.target.checked; renderBoard(); };
 document.getElementById('search').oninput = e => { S.filter.q = e.target.value.trim(); renderBoard(); };
-document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('settings').classList.add('open'); };
+document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('settings').classList.add('open'); };
 document.getElementById('saveSettings').onclick = () => {
   const url = document.getElementById('setProxy').value.trim();
   if (/api[_-]?key=|apikey=/i.test(url)){ alertBox('That URL contains an API key. Keep keys on your backend proxy — paste only the proxy URL.'); return; }
   S.settings.refresh = clamp(+document.getElementById('setRefresh').value || 15, 5, 60); S.settings.sims = +document.getElementById('setSims').value || 1000;
-  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900);
+  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900); S.settings.book = document.getElementById('setBook').value;
   saveSettingsLS(); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
 };
 function alertBox(msg){ const b = document.querySelector('#settings .box'); let n = b.querySelector('.notice'); if (!n){ n = document.createElement('div'); n.className = 'notice'; b.insertBefore(n, b.children[2]); } n.textContent = msg; }
