@@ -59,6 +59,7 @@ tr.rk25 td{font-weight:600}tr.rkline td{border-top:2px solid #55544e}
 .cv{font-weight:700}.cv.y{color:var(--good)}.cv.n{color:var(--bad)}
 .pf1{color:var(--warn);font-weight:700}.pf2{color:#ff9d6b;font-weight:800}.pf3{color:var(--bad);font-weight:800;text-decoration:line-through}
 .flr{font-size:11.5px;white-space:nowrap}.flr.on{color:var(--good)}.flr.off{color:var(--text-muted)}
+th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--text-primary)}th.sortable .ar{font-size:9px;margin-left:3px;opacity:.9}
 .bonus{font-weight:700;color:var(--warn)}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
 .card:hover{border-color:#55544e}
@@ -1843,8 +1844,36 @@ async function renderRank(){
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center"><div class="chips">${tabs}</div><input type="text" id="rankQ" placeholder="Search team…" value="${esc(S.rankQ || '')}"><select id="rankConf"><option value="">All conferences</option>${confs.map(c => `<option ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
     <div class="tw"><table><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="10" class="na">No data yet — this fills in as the collector logs games.</td></tr>`}</tbody></table></div>
     <div class="note">${note} Click any team for its schedule, results against the spread and over/unders.</div></div>`;
+  makeSortable(document.querySelector('#main table'), 'rank-' + tab);
   const qi = document.getElementById('rankQ'); qi.oninput = () => { S.rankQ = qi.value; clearTimeout(S.rankT); S.rankT = setTimeout(() => { renderRank().then(() => { const el = document.getElementById('rankQ'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }); }, 250); };
   document.getElementById('rankConf').onchange = e => { S.rankConf = e.target.value; renderRank(); };
+}
+
+/* ---------- click-to-sort tables (sort choice is remembered per table) ---------- */
+function cellSortVal(td){
+  const t = (td.textContent || '').trim();
+  if (!t || /^(—|n\/a|-)$/.test(t) || /^n\/a/.test(t)) return null;
+  let m = t.match(/^(\d+)-(\d+)(?:-(\d+))?\b/); if (m && !/^\d+-\d+\s*\d/.test(t.replace(/\s+/g, ' ')) && t.length <= 9){ const w = +m[1], l = +m[2]; return w + l ? w/(w + l) + w*1e-6 : 0; }
+  m = t.replace(/^#/, '').match(/^[+\-−]?\d+(\.\d+)?/); if (m) return parseFloat(m[0].replace('−', '-'));
+  return t.toLowerCase();
+}
+function makeSortable(table, key){
+  if (!table) return; S.sorts = S.sorts || {};
+  const ths = [...table.querySelectorAll('thead th')], tbody = table.querySelector('tbody'); if (!tbody) return;
+  const apply = () => {
+    const st = S.sorts[key]; ths.forEach((th, i) => { const ar = th.querySelector('.ar'); if (ar) ar.remove(); if (st && st.col === i){ const sp = document.createElement('span'); sp.className = 'ar'; sp.textContent = st.dir > 0 ? '▲' : '▼'; th.appendChild(sp); } });
+    if (!st) return;
+    const rows = [...tbody.querySelectorAll('tr')].filter(r => r.cells.length === ths.length);
+    rows.sort((a, b) => { const x = cellSortVal(a.cells[st.col]), y = cellSortVal(b.cells[st.col]);
+      if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+      if (typeof x === 'number' && typeof y === 'number') return (x - y)*st.dir; return String(x).localeCompare(String(y))*st.dir; });
+    rows.forEach(r => { r.classList.remove('rkline'); tbody.appendChild(r); });
+  };
+  ths.forEach((th, i) => { if (!th.textContent.trim()) return; th.classList.add('sortable'); th.title = (th.title ? th.title + ' — ' : '') + 'Click to sort';
+    th.onclick = () => { const cur = S.sorts[key]; const sample = [...tbody.rows].map(r => r.cells[i] && cellSortVal(r.cells[i])).find(v => v != null);
+      const first = typeof sample === 'number' ? -1 : 1;
+      S.sorts[key] = cur && cur.col === i ? { col: i, dir: -cur.dir } : { col: i, dir: first }; apply(); }; });
+  apply();
 }
 
 /* =========================================================================
