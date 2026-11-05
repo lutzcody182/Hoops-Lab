@@ -57,6 +57,8 @@ main{padding:14px 16px 60px}
 .tlink{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
 tr.rk25 td{font-weight:600}tr.rkline td{border-top:2px solid #55544e}
 .cv{font-weight:700}.cv.y{color:var(--good)}.cv.n{color:var(--bad)}
+.pf1{color:var(--warn);font-weight:700}.pf2{color:#ff9d6b;font-weight:800}.pf3{color:var(--bad);font-weight:800;text-decoration:line-through}
+.flr{font-size:11.5px;white-space:nowrap}.flr.on{color:var(--good)}.flr.off{color:var(--text-muted)}
 .bonus{font-weight:700;color:var(--warn)}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
 .card:hover{border-color:#55544e}
@@ -428,6 +430,7 @@ function classifyPlay(p){
   const txt = ((p.text || '') + ' ' + (p.type?.text || '')).toLowerCase();
   let kind = null, three = false, shot = null;
   const made = p.scoringPlay === true || /\b(made|makes)\b/.test(txt);
+  if (/substitution|enters the game|sub in\b|sub out\b|subbing (in|out)|\bsubs? (in|out)\b/.test(txt)) return { kind: 'sub', made: false, three: false, shot: null };
   if (/free throw/.test(txt)) kind = 'ft';
   else if (p.shootingPlay === true || /(jumper|jump shot|layup|lay-up|dunk|tip shot|tip-in|three point|3-pt|hook shot|two point)/.test(txt)) {
     kind = 'fg'; three = p.scoreValue === 3 || /(three point|3-pt|3pt|three pointer)/.test(txt);
@@ -444,7 +447,7 @@ function parsePlays(plays){
   return (plays || []).map(p => {
     const period = p.period?.number || 1; const c = parseClock(p.clock?.displayValue ?? p.clock?.value) ?? 0;
     const k = classifyPlay(p);
-    return { id: p.id, period, clock: p.clock?.displayValue || '', el: elapsedOf(period, c), h: num(p.homeScore), a: num(p.awayScore), team: p.team?.id ? String(p.team.id) : null, text: p.text || p.type?.text || '', scoring: !!p.scoringPlay, ...k };
+    return { id: p.id, period, clock: p.clock?.displayValue || '', el: elapsedOf(period, c), h: num(p.homeScore), a: num(p.awayScore), team: p.team?.id ? String(p.team.id) : null, text: p.text || p.type?.text || '', scoring: !!p.scoringPlay, ath: (p.participants || []).map(x => String(x.athlete?.id ?? '')).filter(Boolean), ...k };
   });
 }
 
@@ -961,6 +964,65 @@ function badBeats(g, det){
   return out;
 }
 
+/* =========================================================================
+   PLAYER FOUL FLAGS + ROTATION (time on the floor)
+   ========================================================================= */
+function foulFlag(pf, g){
+  pf = num(pf); if (pf == null) return null;
+  if (pf >= 5) return { lvl: 3, txt: 'Fouled out' };
+  if (g.status === 'post') return null;
+  const half1 = g.period === 1 || g.status === 'half' || g.status === 'pre', clk = g.clock ?? 0;
+  if (pf === 4) return { lvl: 2, txt: '4 fouls' };
+  if (pf === 3 && (half1 || (g.period === 2 && clk > 600))) return { lvl: 1, txt: half1 ? '3 fouls in 1H' : '3 fouls' };
+  if (pf === 2 && g.period === 1 && g.status === 'in' && clk > 600) return { lvl: 1, txt: '2 fouls early' };
+  return null;
+}
+function foulList(g, det){
+  const out = [];
+  for (const [side, P] of [['a', det && det.pA], ['h', det && det.pH]]) for (const r of (P && P.rows) || []){ if (r.dnp) continue; const f = foulFlag(r.v.PF, g); if (f) out.push({ side, name: r.short || r.name, pf: num(r.v.PF), starter: r.starter, ...f }); }
+  return out.sort((x, y) => y.lvl - x.lvl || (y.starter - x.starter));
+}
+/* Who is on the floor, rebuilt from starters + substitutions in the play-by-play.
+   When ESPN doesn't log substitutions, falls back to "last recorded action". */
+function rotation(det, g){
+  if (!det || !det.plays || !det.pH || !det.pA) return null;
+  const subs = det.plays.filter(p => p.kind === 'sub');
+  const sides = { h: { P: det.pH, tid: g.home.id }, a: { P: det.pA, tid: g.away.id } };
+  const st = {}, nameIdx = [];
+  for (const sd of ['h', 'a']){ const T = st[sd] = {};
+    for (const r of sides[sd].P.rows){ if (r.dnp || !r.id) continue; T[r.id] = { id: String(r.id), name: r.short || r.name, full: r.name, on: !!r.starter, since: r.starter ? 0 : null, outAt: null, lastAct: null, approx: false, stints: 0 };
+      const last = String(r.name || '').split(' ').slice(-1)[0]; nameIdx.push({ sd, id: String(r.id), full: String(r.name || '').toLowerCase(), last: last.toLowerCase() }); } }
+  const sideOf = id => st.h[id] ? 'h' : st.a[id] ? 'a' : null;
+  const findName = (txt, sd) => { const t = txt.toLowerCase(); let best = null;
+    for (const n of nameIdx){ if (sd && n.sd !== sd) continue; if (n.full && t.includes(n.full)) { if (!best || n.full.length > best.full.length) best = n; } }
+    if (!best) for (const n of nameIdx){ if (sd && n.sd !== sd) continue; if (n.last && n.last.length > 2 && new RegExp('\\b' + n.last.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t)) { best = n; break; } }
+    return best ? best.id : null; };
+  const put = (sd, id, on, el, approx) => { const x = st[sd][id]; if (!x) return;
+    if (on && !x.on){ x.on = true; x.since = el; x.approx = !!approx; x.stints++; }
+    else if (!on && x.on){ x.on = false; x.outAt = el; } };
+  const enforce = (sd, keep, el) => { const on = Object.values(st[sd]).filter(x => x.on); if (on.length <= 5) return;
+    on.filter(x => x.id !== keep).sort((x, y) => (x.lastAct ?? x.since ?? 0) - (y.lastAct ?? y.since ?? 0)).slice(0, on.length - 5).forEach(x => { x.on = false; x.outAt = el; }); };
+  for (const p of det.plays){
+    if (p.kind === 'sub'){
+      const t = p.text || '';
+      let inId = null, outId = null;
+      const m = t.match(/^(.*?)\s+enters the game for\s+(.*?)\.?$/i);
+      if (p.ath && p.ath.length >= 2 && sideOf(p.ath[0]) && sideOf(p.ath[1])){ inId = p.ath[0]; outId = p.ath[1]; }
+      else if (m){ inId = findName(m[1]); outId = findName(m[2]); }
+      else { const id = (p.ath && p.ath[0] && sideOf(p.ath[0])) ? p.ath[0] : findName(t); if (/\b(in|enters|subbing in|sub in)\b/i.test(t) && !/\bout\b/i.test(t)) inId = id; else if (/\bout\b/i.test(t)) outId = id; }
+      if (outId){ const sd = sideOf(outId); if (sd) put(sd, outId, false, p.el); }
+      if (inId){ const sd = sideOf(inId); if (sd){ put(sd, inId, true, p.el); enforce(sd, inId, p.el); } }
+      continue;
+    }
+    for (const id of p.ath || []){ const sd = sideOf(id); if (!sd) continue; const x = st[sd][id];
+      if (!x.on){ put(sd, id, true, p.el, true); enforce(sd, id, p.el); }
+      x.lastAct = p.el; }
+  }
+  const now = gameElapsed(g), fin = g.status === 'post';
+  const view = sd => Object.values(st[sd]).map(x => Object.assign({}, x, { stint: x.on && x.since != null ? now - x.since : null, benchFor: !x.on && x.outAt != null ? now - x.outAt : null }));
+  return { available: subs.length >= 6, subs: subs.length, now, fin, h: view('h'), a: view('a') };
+}
+
 /*@@CORE_END@@*/ // (the background collector runs everything above this line)
 /* =========================================================================
    CHART (SVG line chart with hover crosshair)
@@ -1144,6 +1206,7 @@ function card(g){
     ${g.status === 'pre' || (g.status === 'in' && g.period === 1) || g.status === 'half' ? h1Strip(g) : ''}
     ${h1Chip(g, p)}
     ${runsLine(g, det)}
+    ${(g.status === 'in' || g.status === 'half') && det ? (() => { const fl = foulList(g, det).filter(f => f.lvl >= 2 || (f.starter && f.lvl >= 1)); return fl.length ? `<div class="cover">⚠ ${fl.slice(0, 4).map(f => `<span class="pf${f.lvl}">${esc((f.side === 'h' ? g.home : g.away).abbr)} ${esc(f.name)} (${f.pf})</span>`).join(' · ')}${fl.length > 4 ? ` +${fl.length - 4}` : ''}</div>` : ''; })() : ''}
     ${coverText(g, ln)}
     ${S.cardView === 'stats' && g.status !== 'pre' && g.status !== 'other' ? `<div class="sl">${statLineTable(g, det) || `<span class="na">${det ? 'No box score published yet' : 'Loading stats…'}</span>`}</div>` : ''}
     <div class="upd">Score ${tm(g.ts)}${det ? ' · Box ' + tm(det.ts) : ''}${ln ? ' · Odds ' + tm(ln.ts) : ' · No odds posted'}</div>
@@ -1324,7 +1387,7 @@ function tabOverview(g, det){
   return h;
 }
 
-function boxTable(p, label){
+function boxTable(p, label, g, rot){
   if (!p) return `<div class="section"><h3>${esc(label)}</h3>${NA} — player box score not provided yet.</div>`;
   const cols = ['MIN','PTS','REB','OREB','DREB','AST','STL','BLK','TO','PF','FG','FG%','3PT','3P%','FT','FT%'];
   const hasPM = p.names.includes('+/-');
@@ -1332,16 +1395,36 @@ function boxTable(p, label){
   const pctOf = s => { if (!s || !String(s).includes('-')) return null; const [m, a] = String(s).split('-').map(Number); return a ? m/a : null; };
   const cell = (v, c) => c === 'FG%' ? pct(pctOf(v.FG), 0) : c === '3P%' ? pct(pctOf(v['3PT']), 0) : c === 'FT%' ? pct(pctOf(v.FT), 0) : (v[c] ?? NA);
   const rows = [...p.rows].sort((a, b) => (b.starter - a.starter) || ((num(b.v.MIN) || 0) - (num(a.v.MIN) || 0)));
-  return `<div class="section"><h3>${esc(label)}</h3><div class="tw"><table><thead><tr><th>Player</th>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
+  const live = g && (g.status === 'in' || g.status === 'half');
+  const rmap = {}; if (rot) for (const x of rot) rmap[x.id] = x;
+  const floor = r => { const x = rmap[String(r.id)]; if (!live || !x) return '';
+    if (x.on) return `<span class="flr on" title="On the floor since ${x.since != null ? gameClockFmt(x.since, true) : '?'} (game clock)${x.approx ? ' — estimated from play-by-play actions' : ''}">● ${x.approx ? '~' : ''}${fmtMS(x.stint || 0)}</span>`;
+    return `<span class="flr off" title="${x.outAt != null ? 'Went to the bench at ' + gameClockFmt(x.outAt, true) : 'Has not checked in'}">${x.outAt != null ? 'bench ' + fmtMS(x.benchFor || 0) : '—'}</span>`; };
+  const pfCell = r => { const f = g ? foulFlag(r.v.PF, g) : null; return f ? `<span class="pf${f.lvl}" title="${esc(f.txt)}">${esc(r.v.PF)}${f.lvl >= 2 ? ' ⚠' : ''}</span>` : (r.v.PF ?? NA); };
+  const showFloor = live && rot;
+  return `<div class="section"><h3>${esc(label)}</h3><div class="tw"><table><thead><tr><th>Player</th>${showFloor ? '<th title="Time on the floor in the current stint (game clock), or time on the bench">Floor</th>' : ''}${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
     ${rows.map(r => r.dnp ? `<tr class="dnp"><td>${esc(r.name)} <small>${esc(r.pos)}</small></td><td colspan="${cols.length}" style="text-align:left">DNP${r.reason ? ' — ' + esc(r.reason) : ''}</td></tr>`
-      : `<tr><td>${esc(r.name)} <small style="color:var(--text-muted)">${esc(r.pos)}${r.starter ? ' · S' : ''}</small></td>${cols.map(c => `<td class="num">${cell(r.v, c)}</td>`).join('')}</tr>`).join('')}
-    ${p.totals ? `<tr class="tot"><td>Totals</td>${cols.map(c => `<td class="num">${c === 'MIN' ? '' : cell(p.totals, c)}</td>`).join('')}</tr>` : ''}
+      : `<tr><td>${esc(r.name)} <small style="color:var(--text-muted)">${esc(r.pos)}${r.starter ? ' · S' : ''}</small></td>${showFloor ? `<td>${floor(r)}</td>` : ''}${cols.map(c => `<td class="num">${c === 'PF' ? pfCell(r) : cell(r.v, c)}</td>`).join('')}</tr>`).join('')}
+    ${p.totals ? `<tr class="tot"><td>Totals</td>${showFloor ? '<td></td>' : ''}${cols.map(c => `<td class="num">${c === 'MIN' ? '' : cell(p.totals, c)}</td>`).join('')}</tr>` : ''}
   </tbody></table></div>${hasPM ? '' : '<div class="note">Plus/minus is not provided by ESPN for this game.</div>'}</div>`;
 }
 function tabBox(g, det){
   if (!det) return `<div class="section">Box score loading…</div>`;
   if (!det.pA && !det.pH) return `<div class="section">No box score has been published for this game yet.</div>`;
-  return boxTable(det.pA, g.away.name) + boxTable(det.pH, g.home.name) + updatedLine(g, det);
+  const rot = rotation(det, g);
+  return rotationSection(g, det, rot) + boxTable(det.pA, g.away.name, g, rot && rot.a) + boxTable(det.pH, g.home.name, g, rot && rot.h) + updatedLine(g, det);
+}
+function rotationSection(g, det, rot){
+  const live = g.status === 'in' || g.status === 'half';
+  const fl = foulList(g, det);
+  const flHtml = fl.length ? `<div class="note" style="color:var(--text-secondary);margin-bottom:6px">⚠ <b>Foul trouble:</b> ${fl.map(f => `<span class="pf${f.lvl}">${esc((f.side === 'h' ? g.home : g.away).abbr)} ${esc(f.name)} — ${esc(f.txt)}</span>`).join(' · ')}</div>` : '';
+  if (!live) return fl.length ? `<div class="section"><h3>Fouls</h3>${flHtml}</div>` : '';
+  if (!rot) return flHtml ? `<div class="section">${flHtml}</div>` : '';
+  const five = (list, team) => { const on = list.filter(x => x.on).sort((x, y) => (x.since ?? 0) - (y.since ?? 0));
+    return `<div><b>${esc(team.abbr)}</b> ${on.length ? on.map(x => `<span class="flr on">${esc(x.name)} <span style="color:var(--text-secondary)">since ${x.approx ? '~' : ''}${x.since != null ? (x.since === 0 ? 'tip-off' : gameClockFmt(x.since, true)) : '?'}</span> (${fmtMS(x.stint || 0)})${(x.stint || 0) >= 600 ? ' 🔋' : ''}</span>`).join(' · ') : '<span class="na">unknown</span>'}</div>`; };
+  return `<div class="section"><h3>On the floor now <small>— ${rot.available ? `rebuilt from ${rot.subs} substitutions in the play-by-play` : 'ESPN isn\'t logging substitutions for this game, so this is estimated from each player\'s most recent actions'} · game-clock time in the current stint${rot.available ? '' : ' (~ = estimate)'}</small></h3>
+    ${flHtml}${five(rot.a, g.away)}${five(rot.h, g.home)}
+    <div class="note">🔋 = 10+ straight minutes on the floor. “bench” in the table = time since the player last checked out.</div></div>`;
 }
 function tabTeam(g, det){
   if (!det || !det.hasBox) return `<div class="section">Team statistics are not available yet${g.status === 'pre' ? ' (game has not started)' : ''}.</div>`;
