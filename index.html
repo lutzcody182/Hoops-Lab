@@ -137,6 +137,7 @@ tr.dnp td{color:var(--text-muted)}
     <div class="brand">Hoops Lab<small>Live NCAA D1 men's basketball · scores · box scores · odds · pace · projections</small></div>
     <div class="chips tabs-main">
       <button class="btn on" data-view="board">Scoreboard</button>
+      <button class="btn" data-view="lead">Leaderboards</button>
       <button class="btn" data-view="rank">Hoops Lab Top 25</button>
       <button class="btn" data-view="perf">Model performance</button>
     </div>
@@ -1745,6 +1746,69 @@ async function renderTeam(){
   if (S.view === 'team' && S.teamView === token) draw();
 }
 
+/* =========================================================================
+   LEADERBOARDS (for the selected date)
+   ========================================================================= */
+function goAheadInfo(g, det){
+  if (g.status !== 'post' || !det || !det.plays) return null;
+  const M = g.home.score - g.away.score; if (!M) return null;
+  const W = M > 0 ? 'h' : 'a', end = endEl(g); const sc = det.plays.filter(p => p.scoring && p.h != null && p.a != null);
+  let ga = null; for (let i = 0; i < sc.length; i++){ const m = sc[i].h - sc[i].a, before = i ? sc[i-1].h - sc[i-1].a : 0;
+    if ((W === 'h' ? m > 0 : m < 0) && (W === 'h' ? before <= 0 : before >= 0)) ga = sc[i]; }
+  return ga ? { play: ga, secs: Math.max(0, end - ga.el), W, ot: g.period > 2 } : null;
+}
+async function loadAllForDate(){
+  const todo = [...S.games.values()].filter(g => (g.status === 'post' || g.status === 'in' || g.status === 'half') && !S.details.has(g.gid));
+  S.leadLoading = { done: 0, total: todo.length }; renderLead();
+  await Promise.all(todo.map(g => fetchSummary(g.gid).then(() => { recompute(g); }).catch(() => {}).finally(() => { S.leadLoading.done++; if (S.leadLoading.done % 6 === 0 && S.view === 'lead') renderLead(); })));
+  S.leadLoading = null; if (S.view === 'lead') renderLead();
+}
+async function renderLead(){
+  const m = document.getElementById('main');
+  const games = [...S.games.values()].filter(g => g.status === 'post' || g.status === 'in' || g.status === 'half');
+  const withDet = games.filter(g => S.details.get(g.gid)?.hasBox);
+  await Promise.all(withDet.flatMap(g => [loadPrior(g.home.id), loadPrior(g.away.id)]));
+  const ab = (g, sd) => esc((sd === 'h' ? g.home : g.away).abbr);
+  const score = g => `${esc(g.away.abbr)} ${g.away.score ?? ''} @ ${esc(g.home.abbr)} ${g.home.score ?? ''}`;
+  const stTxt = g => g.status === 'post' ? (g.period > 2 ? `Final/${g.period === 3 ? 'OT' : (g.period - 2) + 'OT'}` : 'Final') : g.status === 'half' ? 'Half' : `${periodName(g.period)} ${g.displayClock}`;
+  const row = (g, cells) => `<tr data-fgid="${g.gid}" style="cursor:pointer"><td style="text-align:left">${score(g)} <small class="na" style="font-style:normal">${esc(stTxt(g))}</small></td>${cells.map(c => `<td class="num">${c}</td>`).join('')}</tr>`;
+  const board = (title, sub, head, rows) => `<div class="section"><h3>${title} <small>— ${sub}</small></h3>${rows.length ? `<div class="tw"><table><thead><tr><th style="text-align:left">Game</th>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<div class="note">No qualifying games yet.</div>'}</div>`;
+
+  // 1. Shooting variance (3P + FT points vs each team's shooting history)
+  const sv = withDet.map(g => { const d = S.details.get(g.gid); const LH = luckFor(d.totH, S.priors.get(g.home.id)), LA = luckFor(d.totA, S.priors.get(g.away.id)); if (!LH || !LA) return null;
+    const tot = Math.abs(LH.d3) + Math.abs(LH.dF) + Math.abs(LA.d3) + Math.abs(LA.dF), swing = (LH.d3 + LH.dF) - (LA.d3 + LA.dF);
+    return { g, tot, swing, LH, LA }; }).filter(Boolean).sort((x, y) => y.tot - x.tot).slice(0, 10);
+  // 2. Decided in the final minute
+  const dec = withDet.map(g => ({ g, i: goAheadInfo(g, S.details.get(g.gid)) })).filter(x => x.i && x.i.secs <= 60 && x.i.play.el >= (x.i.ot ? endEl(x.g) - 300 : 2340)).sort((x, y) => x.i.secs - y.i.secs).slice(0, 10);
+  // 3. Most combined points in the final minute (last 60 seconds of the game, including the final OT)
+  const fm = withDet.filter(g => g.status === 'post').map(g => { const d = S.details.get(g.gid); const e = endEl(g); const s0 = scoreAt(d, e - 60); const pts = (g.home.score + g.away.score) - (s0.h + s0.a);
+    return { g, pts, h: g.home.score - s0.h, a: g.away.score - s0.a }; }).sort((x, y) => y.pts - x.pts).slice(0, 10);
+  // 4. Highest share of minutes played by starters
+  const sm = []; for (const g of withDet){ const d = S.details.get(g.gid); for (const [sd, P] of [['a', d.pA], ['h', d.pH]]){ if (!P) continue;
+    let st = 0, all = 0, top = null; for (const r of P.rows){ const mn = num(r.v.MIN) || 0; all += mn; if (r.starter){ st += mn; if (!top || mn > top.mn) top = { mn, name: r.short || r.name }; } }
+    if (all >= 30) sm.push({ g, sd, share: st/all, st, all, top, bench: P.rows.filter(r => !r.starter && (num(r.v.MIN) || 0) > 0).length }); } }
+  sm.sort((x, y) => y.share - x.share);
+  // 5. Biggest late separation (margin growth over the last 5:00 of regulation)
+  const ls = withDet.filter(g => g.status === 'post' || (g.status === 'in' && gameElapsed(g) > 2100)).map(g => { const d = S.details.get(g.gid);
+    const s5 = scoreAt(d, 2100), endM = g.home.score - g.away.score, m5 = s5.h - s5.a; const lead = endM >= 0 ? 'h' : 'a';
+    const sep = lead === 'h' ? endM - m5 : m5 - endM; return { g, sep, m5, endM, lead }; }).filter(x => x.sep > 0).sort((x, y) => y.sep - x.sep).slice(0, 10);
+
+  const prog = S.leadLoading ? `Loading box scores… ${S.leadLoading.done}/${S.leadLoading.total}` : `${withDet.length} of ${games.length} started games have box scores loaded`;
+  m.innerHTML = `<div class="notice" style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><span>Leaderboards for <b>${new Date(S.date + 'T12:00:00').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</b> · ${prog}. Use the day strip above to change the date.</span>${withDet.length < games.length && !S.leadLoading ? `<button class="btn sm" id="leadLoadAll">Load all ${games.length - withDet.length} remaining games</button>` : ''}</div>
+  ${board('🎯 Largest shooting variance', '3-point and free-throw points above/below each team\'s shooting history (model estimate)', ['Total variance', 'Away 3P / FT', 'Home 3P / FT', 'Net swing'],
+    sv.map(x => row(x.g, [`<b>${x.tot.toFixed(1)}</b>`, `${ab(x.g, 'a')} ${sgn(x.LA.d3)} / ${sgn(x.LA.dF)}`, `${ab(x.g, 'h')} ${sgn(x.LH.d3)} / ${sgn(x.LH.dF)}`, `${esc((x.swing >= 0 ? x.g.home : x.g.away).abbr)} +${Math.abs(x.swing).toFixed(1)}`])))}
+  ${board('⏱️ Decided in the final minute', 'when the winner took the lead for good', ['Time left', 'Winner', 'Play'],
+    dec.map(x => row(x.g, [`<b>${x.i.secs <= 3 ? '🚨 ' : ''}${fmtMS(x.i.secs)}</b>${x.i.ot ? ' <small>(OT)</small>' : ''}`, ab(x.g, x.i.W), `<span style="white-space:normal;text-align:left;display:inline-block;max-width:360px">${esc(x.i.play.text)}</span>`])))}
+  ${board('💥 Most points in the final minute', 'combined points scored in the last 60 seconds of the game', ['Combined', 'Away', 'Home'],
+    fm.map(x => row(x.g, [`<b>${x.pts}</b>`, `${ab(x.g, 'a')} ${x.a}`, `${ab(x.g, 'h')} ${x.h}`])))}
+  ${board('🧱 Highest share of minutes by starters', 'starters\' minutes ÷ all team minutes', ['Team', 'Starter share', 'Starter min', 'Bench players used', 'Top starter'],
+    sm.slice(0, 10).map(x => row(x.g, [`<b>${ab(x.g, x.sd)}</b>`, `<b>${pct(x.share)}</b>`, `${x.st}/${x.all}`, x.bench, x.top ? `${esc(x.top.name)} ${x.top.mn}` : NA])))}
+  ${board('🚀 Biggest late separation', 'how much the leader pulled away over the last 5:00 of regulation', ['Pulled away by', 'Margin at 5:00 left', 'Final / current margin'],
+    ls.map(x => row(x.g, [`<b>${ab(x.g, x.lead)} +${x.sep}</b>`, marTxt(x.g, x.m5), marTxt(x.g, x.endM)])))}
+  <div class="note">Built from ESPN box scores and play-by-play. Leaderboards fill in as box scores load (the dashboard loads finished games in the background, or use “Load all”).</div>`;
+  const b = document.getElementById('leadLoadAll'); if (b) b.onclick = loadAllForDate;
+}
+
 async function renderPerf(){
   const m = document.getElementById('main');
   m.innerHTML = '<div class="empty">Loading stored history…</div>';
@@ -1805,7 +1869,7 @@ let sbTimer = null, sumTimer = null, proxyTimer = null, loadToken = 0;
 async function loadDate(date){
   const token = ++loadToken; S.date = date; S.games.clear(); S.proj.clear(); S.loading = true; renderDays(); renderBoard();
   await refreshScoreboard(token);
-  S.loading = false; renderBoard();
+  S.loading = false; renderBoard(); if (S.view === 'lead') renderLead();
   // Background: conference names, team priors for today's teams (lazily, rate limited)
   syncServer();
   loadStandings(currentSeason()).then(st => { if (st){ S.teamNames = st.names || {}; S.teamRec = st.rec || {}; for (const [id, c] of Object.entries(st.conf)) S.conf.set(id, c); fillConfSelect(); renderBoard(); } });
@@ -1846,7 +1910,7 @@ async function refreshSummaries(){
   // finished games just went final: one last pull for final poss
   for (const g of S.games.values()) if (g.status === 'post' && S.details.has(g.gid) && !S.details.get(g.gid).finalPulled && S.date === todayStr()){ jobs.push(g.gid); S.details.get(g.gid).finalPulled = true; }
   await Promise.all(jobs.map(gid => fetchSummary(gid).then(d => { const g = S.games.get(gid); if (g){ if (g.status === 'post') d.finalPulled = true; recompute(g); for (const o of d.pick) recordOdds(g, o); } }).catch(() => {})));
-  if (jobs.length){ if (S.view === 'board') renderBoard(); if (S.open){ S.detailHist = await gameHistory(S.open); renderDetail(); } }
+  if (jobs.length){ if (S.view === 'board') renderBoard(); else if (S.view === 'lead' && !S.leadLoading) renderLead(); if (S.open){ S.detailHist = await gameHistory(S.open); renderDetail(); } }
 }
 function schedule(){
   clearTimeout(sbTimer); clearTimeout(sumTimer); clearTimeout(proxyTimer);
@@ -1887,8 +1951,8 @@ syncCv();
 function setView(v){
   S.view = v; document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === (v === 'team' ? 'rank' : v)));
   document.getElementById('filters').style.display = S.view === 'board' ? '' : 'none';
-  document.getElementById('days').style.display = S.view === 'board' ? '' : 'none';
-  if (v === 'board') renderBoard(); else if (v === 'perf') renderPerf(); else if (v === 'rank') renderRank(); else if (v === 'team') renderTeam();
+  document.getElementById('days').style.display = S.view === 'board' || S.view === 'lead' ? '' : 'none';
+  if (v === 'board') renderBoard(); else if (v === 'perf') renderPerf(); else if (v === 'rank') renderRank(); else if (v === 'lead') renderLead(); else if (v === 'team') renderTeam();
   window.scrollTo(0, 0);
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape'){ closeGame(); document.getElementById('settings').classList.remove('open'); } });
