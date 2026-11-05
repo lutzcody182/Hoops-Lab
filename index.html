@@ -1003,7 +1003,21 @@ function rotation(det, g){
     else if (!on && x.on){ x.on = false; x.outAt = el; } };
   const enforce = (sd, keep, el) => { const on = Object.values(st[sd]).filter(x => x.on); if (on.length <= 5) return;
     on.filter(x => x.id !== keep).sort((x, y) => (x.lastAct ?? x.since ?? 0) - (y.lastAct ?? y.since ?? 0)).slice(0, on.length - 5).forEach(x => { x.on = false; x.outAt = el; }); };
+  // time and points while each player / five-man unit is on the floor
+  let lastEl = 0, pH = 0, pA = 0; const units = { h: {}, a: {} }, team = { h: { pf: 0, pa: 0, sec: 0 }, a: { pf: 0, pa: 0, sec: 0 } };
+  for (const sd of ['h', 'a']) for (const x of Object.values(st[sd])){ x.secOn = 0; x.pf = 0; x.pa = 0; }
+  const accrue = p => {
+    const dt = Math.max(0, p.el - lastEl), dh = p.h != null ? Math.max(0, p.h - pH) : 0, da = p.a != null ? Math.max(0, p.a - pA) : 0;
+    for (const sd of ['h', 'a']){
+      const on = Object.values(st[sd]).filter(x => x.on), us = sd === 'h' ? dh : da, them = sd === 'h' ? da : dh;
+      team[sd].sec += dt; team[sd].pf += us; team[sd].pa += them;
+      for (const x of on){ x.secOn += dt; x.pf += us; x.pa += them; }
+      if (on.length === 5){ const k = on.map(x => x.id).sort().join(','); const u = units[sd][k] = units[sd][k] || { ids: on.map(x => x.id), sec: 0, pf: 0, pa: 0 }; u.sec += dt; u.pf += us; u.pa += them; }
+    }
+    lastEl = Math.max(lastEl, p.el); if (p.h != null) pH = Math.max(pH, p.h); if (p.a != null) pA = Math.max(pA, p.a);
+  };
   for (const p of det.plays){
+    accrue(p);
     if (p.kind === 'sub'){
       const t = p.text || '';
       let inId = null, outId = null;
@@ -1021,7 +1035,44 @@ function rotation(det, g){
   }
   const now = gameElapsed(g), fin = g.status === 'post';
   const view = sd => Object.values(st[sd]).map(x => Object.assign({}, x, { stint: x.on && x.since != null ? now - x.since : null, benchFor: !x.on && x.outAt != null ? now - x.outAt : null }));
-  return { available: subs.length >= 6, subs: subs.length, now, fin, h: view('h'), a: view('a') };
+  const unitList = sd => Object.values(units[sd]).filter(u => u.sec >= 30).sort((x, y) => y.sec - x.sec);
+  return { available: subs.length >= 6, subs: subs.length, now, fin, h: view('h'), a: view('a'), units: { h: unitList('h'), a: unitList('a') }, team };
+}
+
+/* Clutch = last 5:00 of regulation or any overtime with the score within 5 (from play-by-play) */
+function clutchStats(det, g){
+  if (!det || !det.plays || det.plays.length < 20) return null;
+  const out = { h: { pts: 0, poss: 0 }, a: { pts: 0, poss: 0 }, sec: 0, any: false };
+  let pH = 0, pA = 0, lastTeam = null, lastEl = 0, per = null;
+  for (const p of det.plays){
+    const inWin = p.el >= 2100 && Math.abs(pH - pA) <= 5;
+    if (inWin){ out.any = true; out.sec += Math.max(0, p.el - lastEl);
+      if (p.h != null && p.h > pH) out.h.pts += p.h - pH; if (p.a != null && p.a > pA) out.a.pts += p.a - pA;
+      if (p.period !== per){ per = p.period; lastTeam = null; }
+      if (p.team && (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to') && p.team !== lastTeam){ if (p.team === g.home.id) out.h.poss++; else if (p.team === g.away.id) out.a.poss++; lastTeam = p.team; }
+    } else lastTeam = null;
+    lastEl = p.el; if (p.h != null) pH = Math.max(pH, p.h); if (p.a != null) pA = Math.max(pA, p.a);
+  }
+  return out;
+}
+/* Player advanced stats (college coefficient 0.475 on free-throw attempts) */
+function playerAdvanced(P, T){
+  if (!P) return null; const sp = v => v && String(v).includes('-') ? String(v).split('-').map(Number) : [0, 0];
+  const tm = { min: 0, fga: 0, fta: 0, to: 0, fgm: 0 };
+  for (const r of P.rows){ if (r.dnp) continue; const [fm, fa] = sp(r.v.FG), [, ta] = sp(r.v.FT); tm.min += num(r.v.MIN) || 0; tm.fga += fa; tm.fgm += fm; tm.fta += ta; tm.to += num(r.v.TO) || 0; }
+  const res = {};
+  for (const r of P.rows){ if (r.dnp) continue;
+    const [fgm, fga] = sp(r.v.FG), [tpm] = sp(r.v['3PT']), [ftm, fta] = sp(r.v.FT);
+    const mn = num(r.v.MIN) || 0, pts = num(r.v.PTS) || 0, to = num(r.v.TO) || 0, ast = num(r.v.AST) || 0, orb = num(r.v.OREB) || 0, drb = num(r.v.DREB) || 0, stl = num(r.v.STL) || 0, blk = num(r.v.BLK) || 0, pf = num(r.v.PF) || 0;
+    const tsa = fga + 0.475*fta, plays = tsa + to;
+    res[r.id] = {
+      gmsc: pts + 0.4*fgm - 0.7*fga - 0.4*(fta - ftm) + 0.7*orb + 0.3*drb + stl + 0.7*ast + 0.7*blk - 0.4*pf - to,
+      ts: tsa ? pts/(2*tsa) : null, efg: fga ? (fgm + 0.5*tpm)/fga : null,
+      usg: mn && (tm.fga + 0.475*tm.fta + tm.to) ? (plays*(tm.min/5))/(mn*(tm.fga + 0.475*tm.fta + tm.to)) : null,
+      astp: mn && tm.min ? (() => { const d = (mn/(tm.min/5))*tm.fgm - fgm; return d > 0 ? ast/d : null; })() : null,
+      tov: plays ? to/plays : null, ftr: fga ? fta/fga : null, ppa: tsa ? pts/tsa : null };
+  }
+  return res;
 }
 
 /*@@CORE_END@@*/ // (the background collector runs everything above this line)
@@ -1291,7 +1342,7 @@ function renderDays(){
 /* =========================================================================
    RENDER: GAME DETAIL
    ========================================================================= */
-const TABS = [['overview','Projection'],['box','Box score'],['team','Team stats'],['halves','Halves'],['pace','Pace & possessions'],['luck','Adjusted luck'],['odds','Betting lines'],['timeline','Timeline & win prob']];
+const TABS = [['preview','Preview'],['overview','Projection'],['box','Box score'],['team','Team stats'],['halves','Halves'],['lineups','Lineups'],['pace','Pace & possessions'],['luck','Adjusted luck'],['odds','Betting lines'],['timeline','Timeline & win prob']];
 async function openGame(gid){
   S.open = gid; S.openTab = S.openTab || 'overview'; S.detailHist = null;
   document.getElementById('overlay').classList.add('open'); document.body.style.overflow = 'hidden';
@@ -1324,7 +1375,7 @@ function detailBody(g){
   const det = S.details.get(g.gid);
   try {
     switch (S.openTab){
-      case 'box': return tabBox(g, det); case 'team': return tabTeam(g, det); case 'halves': return tabHalves(g, det); case 'pace': return tabPace(g, det);
+      case 'box': return tabBox(g, det); case 'team': return tabTeam(g, det); case 'halves': return tabHalves(g, det); case 'lineups': return tabLineups(g, det); case 'preview': return tabPreview(g, det); case 'pace': return tabPace(g, det);
       case 'luck': return tabLuck(g, det); case 'odds': return tabOdds(g, det); case 'timeline': return tabTimeline(g, det); default: return tabOverview(g, det);
     }
   } catch (e){ console.error(e); return `<div class="notice">Could not render this view: ${esc(e.message)}</div>`; }
@@ -1413,7 +1464,27 @@ function tabBox(g, det){
   if (!det) return `<div class="section">Box score loading…</div>`;
   if (!det.pA && !det.pH) return `<div class="section">No box score has been published for this game yet.</div>`;
   const rot = rotation(det, g);
-  return rotationSection(g, det, rot) + boxTable(det.pA, g.away.name, g, rot && rot.a) + boxTable(det.pH, g.home.name, g, rot && rot.h) + updatedLine(g, det);
+  const tog = `<div style="margin-bottom:8px;display:flex;gap:4px"><button class="btn sm ${S.boxMode !== 'adv' ? 'on' : ''}" data-boxmode="basic">Basic</button><button class="btn sm ${S.boxMode === 'adv' ? 'on' : ''}" data-boxmode="adv">Advanced</button></div>`;
+  if (S.boxMode === 'adv') return tog + rotationSection(g, det, rot) + advTable(det.pA, g.away.name, rot, 'a') + advTable(det.pH, g.home.name, rot, 'h') + updatedLine(g, det);
+  return tog + rotationSection(g, det, rot) + boxTable(det.pA, g.away.name, g, rot && rot.a) + boxTable(det.pH, g.home.name, g, rot && rot.h) + updatedLine(g, det);
+}
+function advTable(P, label, rot, sd){
+  if (!P) return `<div class="section"><h3>${esc(label)}</h3>${NA}</div>`;
+  const A = playerAdvanced(P), side = rot && rot[sd];
+  const pm = {}; if (rot && rot.available && side) for (const x of side) pm[x.id] = x.pf - x.pa;
+  const rows = P.rows.filter(r => !r.dnp).sort((a, b) => (A[b.id]?.gmsc ?? -99) - (A[a.id]?.gmsc ?? -99));
+  const top = rows[0] && A[rows[0].id];
+  return `<div class="section"><h3>${esc(label)} <small>— advanced</small></h3><div class="tw"><table><thead><tr><th>Player</th><th>MIN</th><th>PTS</th>
+    <th title="Hollinger Game Score: one-number summary of a player's box score (10 = average, 20+ = great, 30+ = huge night)">Game Score</th>
+    <th title="True shooting %: points per shooting attempt, counting threes and free throws">TS%</th><th title="Effective FG%: field-goal % with threes worth 1.5x">eFG%</th>
+    <th title="Usage %: share of team possessions the player finished (shot, free throws or turnover) while on the floor">USG%</th>
+    <th title="Assist %: share of teammates' made shots the player assisted while on the floor">AST%</th><th title="Turnover %: turnovers per play used">TO%</th>
+    <th title="Free-throw rate: FTA ÷ FGA">FTr</th>${rot && rot.available ? '<th title="Plus/minus rebuilt from play-by-play substitutions">+/-</th>' : ''}</tr></thead><tbody>
+    ${rows.map(r => { const a = A[r.id] || {}; const gs = a.gmsc;
+      return `<tr><td>${esc(r.name)} <small style="color:var(--text-muted)">${esc(r.pos)}${r.starter ? ' · S' : ''}</small></td><td class="num">${r.v.MIN ?? NA}</td><td class="num">${r.v.PTS ?? NA}</td>
+      <td class="num"><b class="${gs >= 20 ? 'good' : gs < 0 ? 'bad' : ''}">${gs != null ? gs.toFixed(1) : NA}</b></td><td class="num">${pct(a.ts)}</td><td class="num">${pct(a.efg)}</td><td class="num">${pct(a.usg)}</td><td class="num">${pct(a.astp)}</td><td class="num">${pct(a.tov)}</td><td class="num">${pct(a.ftr, 0)}</td>
+      ${rot && rot.available ? `<td class="num">${pm[r.id] != null ? sgn(pm[r.id], 0) : NA}</td>` : ''}</tr>`; }).join('')}
+  </tbody></table></div><div class="note">Sorted by Game Score. Formulas use the college free-throw factor (0.475). ${rot && rot.available ? '+/- is rebuilt from play-by-play substitutions.' : 'Plus/minus needs substitution data, which ESPN isn\'t logging for this game.'}</div></div>`;
 }
 function rotationSection(g, det, rot){
   const live = g.status === 'in' || g.status === 'half';
@@ -1470,6 +1541,78 @@ function tabHalves(g, det){
   const body = rows.map(([l, get, fmt]) => `<tr><td>${l}</td>${HS.map(hf => ['a', 'h'].map(sd => `<td class="num">${cell(get(team(hf, sd)), fmt)}</td>`).join('')).join('')}</tr>`).join('');
   return `<div class="section"><h3>Half-by-half breakdown <small>— from play-by-play; can differ slightly from the official box score</small></h3><div class="tw"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>
     <div class="note">Points come from the official half scores. Shot, turnover, rebound and foul counts are read from play-by-play text. 3 VAR / FT VAR compare makes to each team's shooting history (model estimate).</div></div>${updatedLine(g, det)}`;
+}
+function tabLineups(g, det){
+  if (!det || !det.plays || !det.pH) return `<div class="section">Lineup data appears once the game has play-by-play.</div>`;
+  const rot = rotation(det, g);
+  if (!rot || !rot.available) return `<div class="section"><h3>Lineups & on/off</h3><div class="note">ESPN isn't logging substitutions for this game${rot ? ` (${rot.subs} found)` : ''}, so lineups and on/off numbers can't be rebuilt reliably. Many games do include them — try another game.</div></div>`;
+  const nm = {}; for (const sd of ['h', 'a']) for (const x of rot[sd]) nm[x.id] = x.name;
+  const per40 = (pm, sec) => sec >= 60 ? pm/sec*2400 : null;
+  const sec = (team, sd) => {
+    const T = rot.team[sd], list = rot[sd].filter(x => x.secOn > 0).sort((x, y) => y.secOn - x.secOn);
+    const onoff = list.map(x => { const onPM = x.pf - x.pa, offSec = T.sec - x.secOn, offPM = (T.pf - x.pf) - (T.pa - x.pa);
+      const on40 = per40(onPM, x.secOn), off40 = per40(offPM, offSec);
+      return `<tr><td>${esc(x.name)}</td><td class="num">${fmtMS(x.secOn)}</td><td class="num">${x.pf}-${x.pa}</td><td class="num"><b>${sgn(onPM, 0)}</b></td><td class="num">${offSec >= 60 ? sgn(offPM, 0) : '—'}</td><td class="num">${on40 != null ? sgn(on40) : '—'}</td><td class="num">${off40 != null ? sgn(off40) : '—'}</td><td class="num"><b class="${on40 != null && off40 != null ? (on40 - off40 > 0 ? 'good' : 'bad') : ''}">${on40 != null && off40 != null ? sgn(on40 - off40) : '—'}</b></td></tr>`; }).join('');
+    const units = rot.units[sd].slice(0, 8).map(u => { const pm = u.pf - u.pa; return `<tr><td style="white-space:normal">${u.ids.map(i => esc(nm[i] || i)).join(', ')}</td><td class="num">${fmtMS(u.sec)}</td><td class="num">${u.pf}-${u.pa}</td><td class="num"><b class="${pm > 0 ? 'good' : pm < 0 ? 'bad' : ''}">${sgn(pm, 0)}</b></td><td class="num">${u.sec >= 120 ? sgn(per40(pm, u.sec)) : '—'}</td></tr>`; }).join('');
+    return `<div class="section"><h3>${esc(team.name)} — on/off</h3><div class="tw"><table><thead><tr><th>Player</th><th>Time on</th><th>Pts for-against (on)</th><th>+/- on</th><th>+/- off</th><th title="Point margin per 40 minutes with the player on the floor">Net/40 on</th><th>Net/40 off</th><th title="On minus off, per 40 minutes">On/off swing</th></tr></thead><tbody>${onoff}</tbody></table></div>
+      <h3 style="margin-top:12px">Most-used lineups</h3><div class="tw"><table><thead><tr><th>Five on the floor</th><th>Time</th><th>Pts</th><th>+/-</th><th>Net/40</th></tr></thead><tbody>${units || '<tr><td colspan="5" class="na">No five-man unit has 30+ seconds yet</td></tr>'}</tbody></table></div></div>`;
+  };
+  return `<div class="note" style="margin-bottom:8px">Rebuilt from ${rot.subs} substitutions in ESPN's play-by-play (game-clock time). Small samples swing a lot — a 3-minute lineup's net/40 is mostly noise.</div>${sec(g.away, 'a')}${sec(g.home, 'h')}${updatedLine(g, det)}`;
+}
+
+/* ---------- rating ranks + league averages (for Preview, Top 25, team pages) ---------- */
+function ratingCtx(){
+  if (!S.ratings || !S.ratings.teams) return null;
+  if (S._rc && S._rc.at === S.ratings.updated) return S._rc;
+  const T = S.ratings.teams, ids = Object.keys(T);
+  const rank = (get, desc) => { const arr = ids.filter(id => get(id) != null).sort((a, b) => desc ? get(b) - get(a) : get(a) - get(b)); const r = {}; arr.forEach((id, i) => r[id] = i + 1); return r; };
+  const F = (id, side, k) => T[id].ff && T[id].ff[side] ? T[id].ff[side][k] : null;
+  const rk = { net: rank(id => T[id].net, true), o: rank(id => T[id].o, true), d: rank(id => T[id].d, false), t: rank(id => T[id].t, true), sos: rank(id => T[id].sos, true),
+    o_efg: rank(id => F(id, 'o', 'efg'), true), o_tov: rank(id => F(id, 'o', 'tov'), false), o_orb: rank(id => F(id, 'o', 'orb'), true), o_ftr: rank(id => F(id, 'o', 'ftr'), true),
+    d_efg: rank(id => F(id, 'd', 'efg'), false), d_tov: rank(id => F(id, 'd', 'tov'), true), d_orb: rank(id => F(id, 'd', 'orb'), false), d_ftr: rank(id => F(id, 'd', 'ftr'), false) };
+  const avg = k => { const v = ids.map(id => F(id, 'o', k)).filter(x => x != null); return v.length ? mean(v) : null; };
+  S._rc = { at: S.ratings.updated, rk, n: ids.length, lg: { efg: avg('efg'), tov: avg('tov'), orb: avg('orb'), ftr: avg('ftr') } };
+  return S._rc;
+}
+function tabPreview(g, det){
+  const C = ratingCtx(), T = S.ratings && S.ratings.teams, RA = T && T[g.away.id], RH = T && T[g.home.id];
+  const p = S.proj.get(g.gid), A = g.away.abbr, H = g.home.abbr;
+  if (!RA || !RH) return `<div class="section"><h3>Matchup preview</h3><div class="note">Previews use the opponent-adjusted ratings from the background collector${S.ratings ? ', which don’t include one of these teams yet (common for non-D1 opponents)' : '. Run the collector once to load them'}.</div></div>`;
+  const rk = (k, id) => C && C.rk[k][id] ? `#${C.rk[k][id]}` : '';
+  const row = (l, a, h, ka, kh, better) => { const an = typeof a === 'number' ? a : null, hn = typeof h === 'number' ? h : null;
+    const ca = an != null && hn != null && an !== hn ? ((better === 'high' ? an > hn : an < hn) ? 'good' : '') : '', ch = an != null && hn != null && an !== hn ? ((better === 'high' ? hn > an : hn < an) ? 'good' : '') : '';
+    return `<tr><td>${l}</td><td class="num ${ca}">${a ?? NA} <small class="na" style="font-style:normal">${ka || ''}</small></td><td class="num ${ch}">${h ?? NA} <small class="na" style="font-style:normal">${kh || ''}</small></td></tr>`; };
+  const fx = v => v == null ? null : +v.toFixed(1);
+  const lgT = S.ratings.lg.t, pace = RA.t*RH.t/lgT, tRa = C.rk.t[g.away.id], tRh = C.rk.t[g.home.id], n = C.n;
+  const speed = r => r <= n*0.2 ? 'fast' : r >= n*0.8 ? 'slow' : 'average-paced';
+  const paceTxt = `${esc(A)} is ${speed(tRa)} (#${tRa} tempo), ${esc(H)} is ${speed(tRh)} (#${tRh}). Expected about <b>${pace.toFixed(1)}</b> possessions each, ${pace > lgT + 2 ? 'faster than' : pace < lgT - 2 ? 'slower than' : 'close to'} the D1 average of ${lgT.toFixed(1)}.${Math.abs(tRa - tRh) > n*0.5 ? ' <b>Big pace clash</b> — whoever controls tempo has an edge.' : ''}`;
+  // Four Factors edges: one team's offense vs the other's defense
+  const FF = [['efg', 'shooting (eFG%)', 'high', 0.03], ['tov', 'ball security (TO%)', 'low', 0.025], ['orb', 'offensive rebounding (OR%)', 'high', 0.04], ['ftr', 'getting to the line (FTA/FGA)', 'high', 0.06]];
+  const edges = [];
+  for (const [offT, defT, offR, defR] of [[g.away, g.home, RA, RH], [g.home, g.away, RH, RA]]){
+    if (!offR.ff || !defR.ff) continue;
+    for (const [k, label, dir, sd] of FF){ const o = offR.ff.o[k], d = defR.ff.d[k], lg = C.lg[k]; if (o == null || d == null || lg == null) continue;
+      const sign = dir === 'high' ? 1 : -1, score = (sign*(o - lg) + sign*(d - lg))/sd;
+      edges.push({ score, txt: `<b>${esc(offT.abbr)}</b> ${label}: ${pct(o)} on offense (#${C.rk['o_' + k][offT.id]}) vs ${esc(defT.abbr)} allowing ${pct(d)} (#${C.rk['d_' + k][defT.id]} defense)` }); } }
+  edges.sort((x, y) => Math.abs(y.score) - Math.abs(x.score));
+  const edgeHtml = edges.length ? edges.slice(0, 4).map(e => `<div class="fi" style="cursor:default">${e.score > 0 ? '✅ Edge — ' : '⛔ Struggle — '}${e.txt}</div>`).join('') : '<div class="note">Four Factors need a few games of data.</div>';
+  const cl = R => R.cl ? `${R.cl.w}-${R.cl.l} in ${R.cl.g} clutch games, net ${R.cl.o != null && R.cl.d != null ? sgn(R.cl.o - R.cl.d) : NA}/100` : 'no clutch games yet';
+  const ha = R => R.half ? `${sgn(R.half.h1)} 1H, ${sgn(R.half.h2)} 2H (${sgn(R.half.adj)} adjustment, ${R.half.g} games)` : 'no data yet';
+  return `<div class="section"><h3>Matchup preview <small>— opponent-adjusted Hoops Lab ratings · ${esc(S.ratings.updatedText || '')}</small></h3><div class="tw"><table><thead><tr><th></th><th>${esc(A)}</th><th>${esc(H)}</th></tr></thead><tbody>
+    ${row('Hoops Lab rank (net rating)', `${sgn(RA.net)}`, `${sgn(RH.net)}`, rk('net', g.away.id), rk('net', g.home.id))}
+    ${row('Adjusted offense (pts/100)', fx(RA.o), fx(RH.o), rk('o', g.away.id), rk('o', g.home.id), 'high')}
+    ${row('Adjusted defense (allowed/100)', fx(RA.d), fx(RH.d), rk('d', g.away.id), rk('d', g.home.id), 'low')}
+    ${row('Tempo (poss/40)', fx(RA.t), fx(RH.t), rk('t', g.away.id), rk('t', g.home.id))}
+    ${row('Strength of schedule', RA.sos != null ? sgn(RA.sos) : null, RH.sos != null ? sgn(RH.sos) : null, rk('sos', g.away.id), rk('sos', g.home.id))}
+    ${row('Record', (S.teamRec || {})[g.away.id] || null, (S.teamRec || {})[g.home.id] || null)}
+  </tbody></table></div></div>
+  <div class="two"><div class="section"><h3>Pace</h3><div class="note" style="font-size:13px;color:var(--text-secondary)">${paceTxt}</div></div>
+  <div class="section"><h3>Biggest Four Factors matchups <small>(offense vs the other team's defense)</small></h3>${edgeHtml}</div></div>
+  <div class="two"><div class="section"><h3>Late-game & halftime trends</h3><table><tbody>
+    <tr><td>${esc(A)} clutch</td><td style="text-align:left">${cl(RA)}</td></tr><tr><td>${esc(H)} clutch</td><td style="text-align:left">${cl(RH)}</td></tr>
+    <tr><td>${esc(A)} by half</td><td style="text-align:left">${ha(RA)}</td></tr><tr><td>${esc(H)} by half</td><td style="text-align:left">${ha(RH)}</td></tr></tbody></table>
+    <div class="note">Clutch = last 5:00 or overtime with the score within 5. Halftime numbers are average point margin per half.</div></div>
+  <div class="section"><h3>Model projection <span class="tag">MODEL</span></h3>${p && p.pre ? `<div class="tiles"><div class="tile"><span>Projected score</span><b>${esc(A)} ${f1(p.projA ?? p.pre.a)} – ${f1(p.projH ?? p.pre.h)} ${esc(H)}</b></div><div class="tile"><span>Total</span><b>${f1(p.projT ?? (p.pre.h + p.pre.a))}</b><em>${p.line && p.line.total != null ? 'line ' + p.line.total : ''}</em></div><div class="tile"><span>${esc(H)} win</span><b>${p.pHome != null ? pct(p.pHome, 0) : NA}</b></div></div><div class="note">${esc(p.pre.src)}</div>` : '<div class="note">Projection unavailable.</div>'}</div></div>`;
 }
 function tabPace(g, det){
   if (!det || !det.hasBox) return `<div class="section">Pace and possession data appear once the game tips off and a box score is published.</div>` + (S.proj.get(g.gid)?.pre ? `<div class="section"><h3>Pregame expectation <span class="tag">MODEL</span></h3>${f1(S.proj.get(g.gid).pre.pace)} possessions per team (${esc(S.proj.get(g.gid).pre.src)})</div>` : '');
@@ -1670,13 +1813,36 @@ async function renderRank(){
   const q = (S.rankQ || '').toLowerCase(), cf = S.rankConf || '';
   const confs = [...new Set(ids.map(id => (S.conf.get(id) || {}).abbr).filter(Boolean))].sort();
   const rows = ids.filter(id => { const n = teamName(id); return (!q || (n && (n.name + ' ' + n.abbr).toLowerCase().includes(q))) && (!cf || (S.conf.get(id) || {}).abbr === cf); });
+  const C = ratingCtx(), tab = S.rankTab || 'ratings';
+  const nameCell = id => { const n = teamName(id) || { name: 'Team ' + id, logo: '' }; return `<span class="tlink" data-team="${id}">${n.logo ? `<img src="${esc(n.logo)}" alt="" style="width:18px;height:18px;vertical-align:-4px;margin-right:6px" loading="lazy">` : ''}${esc(n.name)}</span>`; };
+  const sm = v => `<small class="na" style="font-style:normal">(${v ?? '—'})</small>`;
+  let head = '', body = '', note = '';
+  if (tab === 'ratings'){
+    head = `<th>Rk</th><th>Team</th><th>Conf</th><th>Record</th><th title="Adjusted offense minus adjusted defense (points per 100 possessions vs an average D1 team)">Net</th><th title="Points scored per 100 possessions vs an average defense">Adj Off (rk)</th><th title="Points allowed per 100 possessions vs an average offense (lower is better)">Adj Def (rk)</th><th title="Possessions per 40 minutes vs an average opponent">Tempo (rk)</th><th title="Average net rating of D1 opponents played so far">SOS (rk)</th><th title="D1 games in the ratings this season">Games</th>`;
+    body = rows.map(id => { const r = T[id]; return `<tr class="${r.rk <= 25 ? 'rk25' : ''} ${r.rk === 26 && !q && !cf ? 'rkline' : ''}"><td class="num">${r.rk}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td>${esc((S.teamRec || {})[id] || '')}</td><td class="num"><b>${sgn(r.net)}</b></td><td class="num">${r.o.toFixed(1)} ${sm(rO[id])}</td><td class="num">${r.d.toFixed(1)} ${sm(rD[id])}</td><td class="num">${r.t.toFixed(1)} ${sm(rT[id])}</td><td class="num">${r.sos != null ? sgn(r.sos) : '—'} ${sm(r.sosRk)}</td><td class="num">${r.gp}</td></tr>`; }).join('');
+    note = esc(S.ratings.method || '') + ' Early in the season the rankings lean heavily on last season.';
+  } else if (tab === 'clutch'){
+    const list = rows.filter(id => T[id].cl && T[id].cl.g).sort((a, b) => ((T[b].cl.o ?? 0) - (T[b].cl.d ?? 0)) - ((T[a].cl.o ?? 0) - (T[a].cl.d ?? 0)));
+    head = `<th>#</th><th>Team</th><th>Conf</th><th title="Games with clutch time">Clutch games</th><th title="Record in games that had clutch time">Record</th><th>Clutch pts</th><th title="Points per 100 possessions in clutch time">Off/100</th><th title="Points allowed per 100 possessions in clutch time">Def/100</th><th>Net/100</th><th title="Clutch possessions played">Poss</th>`;
+    body = list.map((id, i) => { const c = T[id].cl; const net = c.o != null && c.d != null ? c.o - c.d : null; return `<tr><td class="num">${i + 1}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td class="num">${c.g}</td><td class="num">${c.w}-${c.l}</td><td class="num">${c.pf}-${c.pa}</td><td class="num">${f1(c.o)}</td><td class="num">${f1(c.d)}</td><td class="num"><b class="${net > 0 ? 'good' : net < 0 ? 'bad' : ''}">${net != null ? sgn(net) : NA}</b></td><td class="num">${c.pos}</td></tr>`; }).join('');
+    note = 'Clutch time = the last 5:00 of regulation or any overtime with the score within 5 points, from play-by-play. Samples are small, especially early in the season — a few possessions swing these a lot.';
+  } else if (tab === 'half'){
+    const list = rows.filter(id => T[id].half && T[id].half.g).sort((a, b) => T[b].half.adj - T[a].half.adj);
+    head = `<th>#</th><th>Team</th><th>Conf</th><th>Games</th><th title="Average first-half point margin">1H margin</th><th title="Average second-half point margin (regulation)">2H margin</th><th title="2H margin minus 1H margin: positive = gets better after halftime">Halftime adjustment</th>`;
+    body = list.map((id, i) => { const h = T[id].half; return `<tr><td class="num">${i + 1}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td class="num">${h.g}</td><td class="num">${sgn(h.h1)}</td><td class="num">${sgn(h.h2)}</td><td class="num"><b class="${h.adj > 0 ? 'good' : h.adj < 0 ? 'bad' : ''}">${sgn(h.adj)}</b></td></tr>`; }).join('');
+    note = 'Teams at the top outscore opponents by more after halftime than before it (on average); teams at the bottom fade. Not opponent-adjusted.';
+  } else if (tab === 'ff'){
+    const F = (id, s, k) => T[id].ff ? T[id].ff[s][k] : null; const list = rows.filter(id => T[id].ff);
+    const c = (id, s, k) => `${pct(F(id, s, k))} ${sm(C && C.rk[s + '_' + k][id])}`;
+    head = `<th>Rk</th><th>Team</th><th>Off eFG%</th><th>Off TO%</th><th>Off OR%</th><th>Off FTA/FGA</th><th>Def eFG%</th><th>Def TO%</th><th>Def OR%</th><th>Def FTA/FGA</th>`;
+    body = list.map(id => `<tr><td class="num">${T[id].rk}</td><td>${nameCell(id)}</td><td class="num">${c(id, 'o', 'efg')}</td><td class="num">${c(id, 'o', 'tov')}</td><td class="num">${c(id, 'o', 'orb')}</td><td class="num">${c(id, 'o', 'ftr')}</td><td class="num">${c(id, 'd', 'efg')}</td><td class="num">${c(id, 'd', 'tov')}</td><td class="num">${c(id, 'd', 'orb')}</td><td class="num">${c(id, 'd', 'ftr')}</td></tr>`).join('');
+    note = 'Season Four Factors vs D1 opponents (raw, not opponent-adjusted). Defense columns are what opponents did against the team; ranks are best-to-worst for that team.';
+  }
+  const tabs = [['ratings', 'Ratings'], ['clutch', 'Clutch'], ['half', 'Halftime adjusters'], ['ff', 'Four Factors']].map(([k, l]) => `<button class="btn sm ${tab === k ? 'on' : ''}" data-ranktab="${k}">${l}</button>`).join('');
   m.innerHTML = `<div class="section"><h3>Hoops Lab Top 25 <small>— opponent-adjusted ratings · ${S.ratings.games} D1 games · ${esc(S.ratings.updatedText || '')}</small></h3>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"><input type="text" id="rankQ" placeholder="Search team…" value="${esc(S.rankQ || '')}"><select id="rankConf"><option value="">All conferences</option>${confs.map(c => `<option ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-    <div class="tw"><table><thead><tr><th>Rk</th><th>Team</th><th>Conf</th><th>Record</th><th title="Adjusted offense minus adjusted defense (points per 100 possessions vs an average D1 team)">Net</th><th title="Points scored per 100 possessions vs an average defense">Adj Off (rk)</th><th title="Points allowed per 100 possessions vs an average offense (lower is better)">Adj Def (rk)</th><th title="Possessions per 40 minutes vs an average opponent">Tempo (rk)</th><th title="D1 games in the ratings this season">Games</th></tr></thead><tbody>
-    ${rows.map(id => { const r = T[id], n = teamName(id) || { name: 'Team ' + id, abbr: '', logo: '' };
-      return `<tr class="${r.rk <= 25 ? 'rk25' : ''} ${r.rk === 26 && !q && !cf ? 'rkline' : ''}"><td class="num">${r.rk}</td><td><span class="tlink" data-team="${id}">${n.logo ? `<img src="${esc(n.logo)}" alt="" style="width:18px;height:18px;vertical-align:-4px;margin-right:6px" loading="lazy">` : ''}${esc(n.name)}</span></td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td>${esc((S.teamRec || {})[id] || '')}</td><td class="num"><b>${sgn(r.net)}</b></td><td class="num">${r.o.toFixed(1)} <small class="na" style="font-style:normal">(${rO[id]})</small></td><td class="num">${r.d.toFixed(1)} <small class="na" style="font-style:normal">(${rD[id]})</small></td><td class="num">${r.t.toFixed(1)} <small class="na" style="font-style:normal">(${rT[id]})</small></td><td class="num">${r.gp}</td></tr>`; }).join('')}
-    </tbody></table></div>
-    <div class="note">${esc(S.ratings.method || '')} Early in the season the rankings lean heavily on last season. Click any team for its schedule, results against the spread and over/unders.</div></div>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center"><div class="chips">${tabs}</div><input type="text" id="rankQ" placeholder="Search team…" value="${esc(S.rankQ || '')}"><select id="rankConf"><option value="">All conferences</option>${confs.map(c => `<option ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <div class="tw"><table><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="10" class="na">No data yet — this fills in as the collector logs games.</td></tr>`}</tbody></table></div>
+    <div class="note">${note} Click any team for its schedule, results against the spread and over/unders.</div></div>`;
   const qi = document.getElementById('rankQ'); qi.oninput = () => { S.rankQ = qi.value; clearTimeout(S.rankT); S.rankT = setTimeout(() => { renderRank().then(() => { const el = document.getElementById('rankQ'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }); }, 250); };
   document.getElementById('rankConf').onchange = e => { S.rankConf = e.target.value; renderRank(); };
 }
@@ -1711,6 +1877,9 @@ async function renderTeam(){
     return { ev: String(e.id), date: e.date, done: !!st.completed || st.state === 'post', state: st.state, detail: st.shortDetail || '', neutral: !!c.neutralSite, isHome: me.homeAway === 'home', meS: sc(me.score), opS: sc(op.score),
       opId: String(op.id || op.team?.id || ''), opName: op.team?.displayName || op.team?.location || 'TBD', opAbbr: op.team?.abbreviation || '', homeAbbr: home.team?.abbreviation || '', awayAbbr: away.team?.abbreviation || '', line: undefined }; });
   const R = S.ratings && S.ratings.teams && S.ratings.teams[id];
+  // remaining strength of schedule from upcoming D1 opponents' ratings
+  const RT = S.ratings && S.ratings.teams; const fut = games.filter(gm => !gm.done && RT && RT[gm.opId]);
+  const remSos = fut.length ? mean(fut.map(gm => RT[gm.opId].net)) : null, remN = fut.length, remRk = null, remOf = null;
   const draw = () => {
     let w = 0, l = 0, ac = 0, al = 0, ap = 0, ov = 0, un = 0, pu = 0, cm = [];
     const rows = games.map(gm => {
@@ -1734,6 +1903,10 @@ async function renderTeam(){
         <div class="tile"><span>Against the spread</span><b>${ac}-${al}${ap ? '-' + ap : ''}</b><em>${cm.length ? `avg ${sgn(mean(cm))} vs the line` : 'no lines yet'}</em></div>
         <div class="tile"><span>Over / under</span><b>${ov}-${un}${pu ? '-' + pu : ''}</b><em>overs–unders${pu ? '–pushes' : ''}</em></div>
         ${R ? `<div class="tile"><span>Hoops Lab rank <span class="tag">MODEL</span></span><b>#${R.rk}</b><em>net ${sgn(R.net)} · off ${R.o.toFixed(1)} · def ${R.d.toFixed(1)} · tempo ${R.t.toFixed(1)}</em></div>` : ''}
+        ${R && R.sos != null ? `<div class="tile"><span>Strength of schedule</span><b>${sgn(R.sos)}</b><em>#${R.sosRk || '—'} toughest so far (avg opponent net rating)</em></div>` : ''}
+        ${remSos != null ? `<div class="tile"><span>Remaining schedule</span><b>${sgn(remSos)}</b><em>avg net rating of ${remN} remaining D1 opponents${remRk ? ` · #${remRk} of ${remOf}` : ''}</em></div>` : ''}
+        ${R && R.cl ? `<div class="tile"><span>Clutch</span><b>${R.cl.w}-${R.cl.l}</b><em>${R.cl.g} clutch games · net ${R.cl.o != null && R.cl.d != null ? sgn(R.cl.o - R.cl.d) : NA}/100</em></div>` : ''}
+        ${R && R.half ? `<div class="tile"><span>Halftime adjustment</span><b class="${R.half.adj > 0 ? 'good' : R.half.adj < 0 ? 'bad' : ''}">${sgn(R.half.adj)}</b><em>${sgn(R.half.h1)} in 1H, ${sgn(R.half.h2)} in 2H (avg margin)</em></div>` : ''}
       </div></div>
       <div class="section"><h3>Schedule & results <small>— spread shown for ${esc(n.abbr || n.name)}; lines are the pregame close ESPN shows from DraftKings</small></h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opponent</th><th style="text-align:left">Result</th><th>Spread</th><th>ATS</th><th>Total</th><th>O/U</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="na">No games found</td></tr>'}</tbody></table></div>
       <div class="note">“n/a” means no line was posted for that game (common against non-D1 opponents and some small-conference games).</div></div>`;
@@ -1932,10 +2105,12 @@ function schedule(){
    ========================================================================= */
 document.addEventListener('click', e => {
   const t = e.target;
-  const cardEl = t.closest('.card'); if (cardEl){ S.openTab = S.openTab || 'overview'; openGame(cardEl.dataset.gid); return; }
+  const cardEl = t.closest('.card'); if (cardEl){ const gg = S.games.get(cardEl.dataset.gid); S.openTab = gg && gg.status === 'pre' ? 'preview' : (S.openTab === 'preview' ? 'overview' : S.openTab || 'overview'); openGame(cardEl.dataset.gid); return; }
   if (t.closest('[data-closegame]') || t.id === 'overlay'){ closeGame(); return; }
   const tab = t.closest('[data-tab]'); if (tab){ S.openTab = tab.dataset.tab; renderDetail(); return; }
   const day = t.closest('[data-day]'); if (day && day.classList.contains('day')){ loadDate(day.dataset.day); return; }
+  const bm = t.closest('[data-boxmode]'); if (bm){ S.boxMode = bm.dataset.boxmode; renderDetail(); return; }
+  const rt = t.closest('[data-ranktab]'); if (rt){ S.rankTab = rt.dataset.ranktab; renderRank(); return; }
   const cv = t.closest('[data-cv]'); if (cv){ S.cardView = cv.dataset.cv; try { localStorage.setItem('hl.cardView', S.cardView); } catch {} syncCv(); renderBoard(); if (S.cardView === 'stats') refreshSummaries(); return; }
   const st = t.closest('[data-st]'); if (st){ S.filter.st = st.dataset.st; document.querySelectorAll('[data-st]').forEach(b => b.classList.toggle('on', b === st)); renderBoard(); return; }
   const v = t.closest('[data-view]'); if (v){ setView(v.dataset.view); return; }
