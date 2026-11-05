@@ -994,6 +994,28 @@ function totalsMargins(g){
   return { cur, paceT, adjT, mar, adjMar, final: g.status === 'post' };
 }
 function marTxt(g, m, d = 0){ if (m == null) return NA; if (Math.abs(m) < 0.05) return 'Tied'; return `${esc((m > 0 ? g.home : g.away).abbr)} +${Math.abs(m).toFixed(d)}`; }
+/* First half: current 1H total, total at current 1H pace, model-adjusted 1H total */
+function h1Totals(g){
+  const p = S.proj.get(g.gid); const h1 = p && p.h1; if (!h1) return null;
+  const L = h1.line;
+  if (h1.final) return { done: true, cur: h1.h + h1.a, line: L && L.total != null ? L.total : null };
+  const inH1 = g.status === 'in' && g.period === 1;
+  const cur = inH1 ? (g.home.score || 0) + (g.away.score || 0) : null;
+  const el = inH1 ? 1200 - (g.clock ?? 1200) : 0;
+  return { done: false, cur, pace: inH1 && el >= 120 ? cur*1200/el : null, adj: h1.projT, line: L && L.total != null ? L.total : null };
+}
+function h1Strip(g){
+  const t = h1Totals(g); if (!t) return '';
+  const v = x => x == null ? '—' : x.toFixed(1);
+  if (t.done) return `<div class="tm5"><div><span>1H total</span><b>${t.cur}</b></div><div><span>1H line</span><b>${t.line ?? '—'}</b></div><div><span>1H result</span><b>${t.line != null ? (t.cur > t.line ? 'OVER' : t.cur < t.line ? 'UNDER' : 'PUSH') : '—'}</b></div><div></div><div></div></div>`;
+  return `<div class="tm5">
+    <div title="First-half points so far"><span>1H now</span><b>${t.cur ?? '—'}</b></div>
+    <div title="First-half points extrapolated at the current pace to halftime"><span>1H pace total</span><b>${v(t.pace)}</b></div>
+    <div title="Model first-half projection (model estimate)"><span>1H adj total</span><b class="model">${v(t.adj)}</b></div>
+    <div title="Sportsbook first-half total"><span>1H line</span><b>${t.line ?? '—'}</b></div>
+    <div title="Model first-half projection minus the line"><span>Adj vs line</span><b class="model">${t.line != null && t.adj != null ? sgn(t.adj - t.line) : '—'}</b></div>
+  </div>`;
+}
 function tmStrip(g){
   const t = totalsMargins(g); if (!t) return '';
   return `<div class="tm5">
@@ -1037,6 +1059,7 @@ function card(g){
       <div title="Adjusted Luck Rating: which team's result is more inflated by shooting luck (model estimate)"><span>Luck edge</span><b>${luckTxt}</b></div>
     </div>
     ${tmStrip(g)}
+    ${g.status === 'pre' || (g.status === 'in' && g.period === 1) || g.status === 'half' ? h1Strip(g) : ''}
     ${h1Chip(g, p)}
     ${runsLine(g, det)}
     ${coverText(g, ln)}
@@ -1161,7 +1184,13 @@ function tabOverview(g, det){
     <div class="tile"><span>Current margin</span><b>${marTxt(g, TM.mar)}</b><em>observed</em></div>
     <div class="tile"><span>Luck-adjusted margin <span class="tag">MODEL</span></span><b>${TM.adjMar != null ? marTxt(g, TM.adjMar, 1) : '—'}</b><em>${TM.adjMar != null ? `Shooting-luck swing ${sgn(TM.mar - TM.adjMar)} for ${esc(H)}` : 'Needs a box score'}</em></div>
   </div></div>` : '';
-  let h = tmSec + (slt ? `<div class="section"><h3>Live stat line <small>— hover a column header for its definition</small></h3><div class="tw">${slt}</div></div>` : '');
+  const T1 = h1Totals(g);
+  const h1Sec = T1 && !T1.done ? `<div class="section"><h3>First-half totals</h3><div class="tiles">
+    <div class="tile"><span>1H total now</span><b>${T1.cur ?? '—'}</b><em>${T1.cur == null ? 'First half not started' : 'observed'}</em></div>
+    <div class="tile"><span>1H total at current pace</span><b>${T1.pace != null ? T1.pace.toFixed(1) : '—'}</b><em>${T1.pace != null ? '1H points × 20:00 ÷ time played' : 'Shown after 2 minutes of play'}</em></div>
+    <div class="tile"><span>Adjusted 1H total <span class="tag">MODEL</span></span><b>${T1.adj != null ? T1.adj.toFixed(1) : '—'}</b><em>${T1.line != null ? `line ${T1.line} (${sgn(T1.adj - T1.line)})` : 'no 1H line posted'}</em></div>
+  </div></div>` : T1 && T1.done ? `<div class="section"><h3>First half</h3><div class="tiles"><div class="tile"><span>1H total</span><b>${T1.cur}</b><em>${T1.line != null ? `line ${T1.line} → ${T1.cur > T1.line ? 'OVER' : T1.cur < T1.line ? 'UNDER' : 'PUSH'}` : 'no 1H line posted'}</em></div></div></div>` : '';
+  let h = tmSec + h1Sec + (slt ? `<div class="section"><h3>Live stat line <small>— hover a column header for its definition</small></h3><div class="tw">${slt}</div></div>` : '');
   h += `<div class="section"><h3>Projected final <small>— ${p.n.toLocaleString()} Monte Carlo simulations of the remaining game · model estimate, not observed data</small></h3><div class="tiles">
     <div class="tile"><span>Projected score <span class="tag">MODEL</span></span><b>${esc(A)} ${f1(p.projA)} – ${f1(p.projH)} ${esc(H)}</b></div>
     <div class="tile"><span>Projected total <span class="tag">MODEL</span></span><b>${f1(p.projT)}</b><em>80% range ${p.t10}–${p.t90}</em></div>
