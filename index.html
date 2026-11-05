@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hoops Lab — Live NCAA D1 Men's Basketball</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0f0f0e; --surface-1:#1a1a19; --surface-2:#22221f; --surface-3:#2b2b28; --border:#34332f;
+  --text-primary:#f0efec; --text-secondary:#c3c2b7; --text-muted:#8f8e86;
+  --away:#3987e5; --home:#d95926; --accent:#3987e5;
+  --good:#3fb873; --bad:#e66767; --warn:#c98500; --live:#e66767;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text-primary);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+button,select,input{font:inherit;color:inherit}
+a{color:var(--accent)}
+.num{font-variant-numeric:tabular-nums}
+header.top{position:sticky;top:0;z-index:20;background:rgba(15,15,14,.96);backdrop-filter:blur(6px);border-bottom:1px solid var(--border)}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px}
+.brand{font-weight:800;font-size:17px;letter-spacing:.2px;margin-right:6px}
+.brand small{display:block;font-weight:500;font-size:11px;color:var(--text-muted);letter-spacing:0}
+.btn{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer}
+.btn:hover{background:var(--surface-3)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.sm{padding:3px 8px;font-size:12px}
+select,input[type=text],input[type=date],input[type=url],input[type=number]{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
+.spacer{flex:1}
+.tabs-main .btn{border-radius:999px}
+.days{display:flex;gap:4px;overflow-x:auto;padding:0 16px 10px}
+.day{flex:0 0 auto;text-align:center;padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);cursor:pointer;font-size:12px;color:var(--text-secondary)}
+.day b{display:block;color:var(--text-primary);font-size:13px}
+.day.sel{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:0 16px 10px}
+.chips{display:flex;gap:4px}
+.status-line{font-size:12px;color:var(--text-muted);padding:6px 16px;display:flex;gap:14px;flex-wrap:wrap;border-top:1px solid var(--border)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.dot.ok{background:var(--good)}.dot.err{background:var(--bad)}.dot.idle{background:var(--text-muted)}
+main{padding:14px 16px 60px}
+.notice{background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--warn);padding:10px 12px;border-radius:8px;margin-bottom:12px;color:var(--text-secondary);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
+.card:hover{border-color:#55544e}
+.card.live{border-left:3px solid var(--live)}
+.card .meta{display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:6px;gap:6px}
+.pill{font-size:11px;font-weight:700;border-radius:4px;padding:1px 6px;background:var(--surface-3);color:var(--text-secondary);white-space:nowrap}
+.pill.live{background:rgba(230,103,103,.18);color:#ff9d9d}
+.pill.final{color:var(--text-secondary)}
+.pill.half{background:rgba(201,133,0,.2);color:#f0c060}
+.trow{display:flex;align-items:center;gap:8px;padding:3px 0}
+.trow img{width:22px;height:22px;object-fit:contain}
+.trow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.trow .nm .rk{font-size:11px;color:var(--text-muted);font-weight:600;margin-right:3px}
+.trow .rec{font-size:11px;color:var(--text-muted);margin-left:4px;font-weight:400}
+.trow .sc{font-size:20px;font-weight:800;min-width:34px;text-align:right}
+.trow.lose .sc,.trow.lose .nm{color:var(--text-muted)}
+.poss{color:var(--warn);font-size:10px;margin-left:4px}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px}
+.kv div span{display:block;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px}
+.kv b{font-weight:600}
+.cover{font-size:11px;margin-top:6px;color:var(--text-secondary)}
+.upd{font-size:10px;color:var(--text-muted);margin-top:6px}
+.model{border-bottom:1px dotted var(--text-muted)}
+.tag{font-size:9px;font-weight:700;letter-spacing:.5px;padding:0 4px;border-radius:3px;border:1px solid var(--border);color:var(--text-muted);vertical-align:1px}
+.na{color:var(--text-muted);font-style:italic}
+.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.empty{color:var(--text-muted);padding:40px;text-align:center}
+/* detail */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:40;display:none}
+.overlay.open{display:block}
+.panel{position:absolute;right:0;top:0;bottom:0;width:min(1080px,100%);background:var(--bg);border-left:1px solid var(--border);overflow-y:auto}
+.phead{position:sticky;top:0;background:var(--surface-1);border-bottom:1px solid var(--border);padding:12px 16px;z-index:2}
+.scoreline{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.scoreline .tm{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px}
+.scoreline .tm img{width:34px;height:34px;object-fit:contain}
+.scoreline .big{font-size:30px;font-weight:800}
+.ptabs{display:flex;gap:4px;margin-top:10px;flex-wrap:wrap}
+.pbody{padding:16px}
+.section{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px}
+.section h3{margin:0 0 8px;font-size:14px}
+.section h3 small{font-weight:400;color:var(--text-muted);font-size:12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.tile{background:var(--surface-2);border-radius:10px;padding:10px}
+.tile span{display:block;font-size:11px;color:var(--text-muted)}
+.tile b{font-size:20px;font-weight:800}
+.tile em{display:block;font-style:normal;font-size:11px;color:var(--text-secondary)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:5px 6px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap}
+th{color:var(--text-muted);font-weight:600;font-size:11px;position:sticky;top:0;background:var(--surface-1)}
+th:first-child,td:first-child{text-align:left}
+tr.tot td{font-weight:700;border-top:1px solid #55544e}
+tr.dnp td{color:var(--text-muted)}
+.tw{overflow-x:auto}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--text-secondary);margin:4px 0 6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:5px;vertical-align:3px}
+.chart{position:relative}
+.chart svg{display:block;width:100%;height:auto}
+.tip{position:absolute;pointer-events:none;background:var(--surface-3);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;color:var(--text-primary);white-space:nowrap;display:none;z-index:3}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:760px){.two{grid-template-columns:1fr}.kv{grid-template-columns:repeat(3,1fr)}.panel{width:100%}}
+.plays{max-height:380px;overflow-y:auto;font-size:12.5px}
+.plays div{padding:4px 2px;border-bottom:1px solid var(--border);display:flex;gap:8px}
+.plays div .t{color:var(--text-muted);min-width:70px}
+.note{font-size:12px;color:var(--text-muted);margin-top:6px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:none;align-items:center;justify-content:center}
+.modal.open{display:flex}
+.modal .box{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:16px;width:min(560px,94%);max-height:90vh;overflow:auto}
+.modal label{display:block;margin:10px 0 4px;font-size:12px;color:var(--text-secondary)}
+.modal input{width:100%}
+.close{float:right}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <div class="brand">Hoops Lab<small>Live NCAA D1 men's basketball · scores · box scores · odds · pace · projections</small></div>
+    <div class="chips tabs-main">
+      <button class="btn on" data-view="board">Scoreboard</button>
+      <button class="btn" data-view="perf">Model performance</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="prevDay" aria-label="Previous day">‹</button>
+    <input type="date" id="datePick">
+    <button class="btn" id="nextDay" aria-label="Next day">›</button>
+    <button class="btn" id="todayBtn">Today</button>
+    <button class="btn" id="refreshBtn" title="Refresh now">↻</button>
+    <button class="btn" id="settingsBtn">Settings</button>
+  </div>
+  <div class="days" id="days"></div>
+  <div class="filters" id="filters">
+    <div class="chips" id="statusChips">
+      <button class="btn sm on" data-st="all">All</button>
+      <button class="btn sm" data-st="in">Live</button>
+      <button class="btn sm" data-st="half">Halftime</button>
+      <button class="btn sm" data-st="pre">Upcoming</button>
+      <button class="btn sm" data-st="post">Final</button>
+    </div>
+    <select id="confSel"><option value="">All conferences</option></select>
+    <select id="sortSel">
+      <option value="time">Sort: start time</option>
+      <option value="live">Sort: live first</option>
+      <option value="pace">Sort: highest pace</option>
+      <option value="disc">Sort: projected total vs line</option>
+      <option value="move">Sort: biggest line movement</option>
+      <option value="conf">Sort: conference</option>
+    </select>
+    <label style="font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="rankedOnly"> Ranked only</label>
+    <input type="text" id="search" placeholder="Search team…" style="width:150px">
+  </div>
+  <div class="status-line" id="statusLine"></div>
+</header>
+<main id="main"></main>
+
+<div class="overlay" id="overlay"><div class="panel" id="panel"></div></div>
+
+<div class="modal" id="settings"><div class="box">
+  <button class="btn sm close" data-close>Close</button>
+  <h3 style="margin-top:0">Settings</h3>
+  <label>Live refresh interval (seconds, 5–60)</label>
+  <input type="number" id="setRefresh" min="5" max="60">
+  <label>Simulations per projection</label>
+  <select id="setSims"><option>500</option><option>1000</option><option>2000</option><option>4000</option></select>
+  <label>Extra sportsbook feed URL (optional — your own backend proxy returning The Odds API v4 JSON, e.g. for FanDuel). Never paste an API key here.</label>
+  <input type="url" id="setProxy" placeholder="https://your-worker.workers.dev/ncaab-odds">
+  <label>Extra feed poll interval (seconds, min 60)</label>
+  <input type="number" id="setProxyEvery" min="60" max="900">
+  <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn on" id="saveSettings">Save</button>
+    <button class="btn" id="exportData">Export history (JSON)</button>
+    <button class="btn" id="clearData">Clear stored history</button>
+  </div>
+  <p class="note">Built-in data: ESPN's public scoreboard, box score and play-by-play feeds, including the odds ESPN publishes (supplied by DraftKings, ESPN's odds provider). History (odds snapshots, projections, results) is stored in this browser only.</p>
+</div></div>
+
+<script>
+'use strict';
+/* =========================================================================
+   CONFIG + CONSTANTS
+   ========================================================================= */
+const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball';
+const ESPN_V2 = 'https://site.api.espn.com/apis/v2/sports/basketball/mens-college-basketball';
+// League baselines (approximate recent-season D1 averages). Used ONLY as shrinkage targets / fallback priors, and labeled as such in the UI.
+const LEAGUE = { pace: 68.0, eff: 105.0, ppp: 1.05, tp: 0.340, ft: 0.715, twop: 0.510, hcaPts: 3.0 };
+// Share of a shooting deviation treated as luck (the rest is kept as real signal). Model assumptions, shown in UI.
+const LUCK_SHARE = { three: 0.80, ft: 0.90, two: 0.35 };
+// Shot-type baseline make rates (approximate D1 averages) for the play-by-play shot-quality estimate.
+const SHOT_BASE = { dunk: 0.88, layup: 0.57, tip: 0.50, hook: 0.45, jumper: 0.36, two: 0.48, three: 0.34 };
+
+const S = {
+  view: 'board', date: todayStr(), games: new Map(), order: [],
+  filter: { st: 'all', conf: '', sort: 'time', ranked: false, q: '' },
+  conf: new Map(), // teamId -> {name, abbr}
+  details: new Map(), // gid -> parsed summary
+  proj: new Map(), // gid -> projection result
+  priors: new Map(), // teamId -> prior object | null
+  open: null, openTab: 'overview',
+  health: { scoreboard: {}, summary: {}, odds: {}, proxy: {}, priors: {} },
+  extraOdds: new Map(), // gid -> [{book, ...}]
+  settings: loadSettings(),
+  lastSnap: new Map(), oddsSeen: new Map(),
+};
+
+function loadSettings(){
+  const d = { refresh: 15, sims: 1000, proxy: '', proxyEvery: 120 };
+  try { return Object.assign(d, JSON.parse(localStorage.getItem('hl.settings') || '{}')); } catch { return d; }
+}
+function saveSettingsLS(){ try { localStorage.setItem('hl.settings', JSON.stringify(S.settings)); } catch {} }
+
+/* =========================================================================
+   UTIL
+   ========================================================================= */
+function todayStr(){ const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function ymd(s){ return s.replace(/-/g,''); }
+function addDays(s, n){ const [y,m,d] = s.split('-').map(Number); const t = new Date(y, m-1, d+n); return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0'); }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function num(x){ if (x == null || x === '') return null; if (typeof x === 'number') return isFinite(x) ? x : null; const s = String(x).trim(); if (/^even$/i.test(s)) return 100; if (/^(pk|pick)/i.test(s)) return 0; const v = parseFloat(s.replace(/[^0-9.+\-]/g, '')); return isFinite(v) ? v : null; }
+const NA = '<span class="na" title="Not provided by the data source for this game">n/a</span>';
+function f1(v, d=1){ return v == null || !isFinite(v) ? NA : v.toFixed(d); }
+function pct(v, d=1){ return v == null || !isFinite(v) ? NA : (v*100).toFixed(d) + '%'; }
+function sgn(v, d=1){ return v == null || !isFinite(v) ? NA : (v > 0 ? '+' : '') + v.toFixed(d); }
+function odds(v){ return v == null ? NA : (v > 0 ? '+' + v : String(v)); }
+function line(v){ return v == null ? NA : v === 0 ? 'PK' : (v > 0 ? '+' + v : String(v)); }
+function tm(ts){ return ts ? new Date(ts).toLocaleTimeString([], {hour:'numeric', minute:'2-digit', second:'2-digit'}) : '—'; }
+function ago(ts){ if (!ts) return 'never'; const s = Math.round((Date.now()-ts)/1000); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s/60) + 'm ago' : tm(ts); }
+function impl(ml){ if (ml == null) return null; return ml < 0 ? -ml/(-ml+100) : 100/(ml+100); }
+function devig(a, b){ const pa = impl(a), pb = impl(b); if (pa == null || pb == null) return [pa, pb]; const s = pa + pb; return [pa/s, pb/s]; }
+function shrink(p, n, prior, k){ if (p == null || !isFinite(p) || !n) return prior; return (p*n + prior*k)/(n + k); }
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+function normName(s){ return String(s||'').toLowerCase().replace(/&/g,'and').replace(/\bstate\b/g,'st').replace(/\bsaint\b/g,'st').replace(/[^a-z0-9]/g,''); }
+function mean(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : null; }
+function quant(sorted, q){ if (!sorted.length) return null; const i = clamp(Math.floor(q*(sorted.length-1)), 0, sorted.length-1); return sorted[i]; }
+
+/* ---------- network: in-flight de-dupe, concurrency limit, timeout ---------- */
+const Net = {
+  max: 4, active: 0, q: [], inflight: new Map(), mem: new Map(),
+  get(url, { ttl = 0, timeout = 12000 } = {}){
+    if (ttl){ const c = this.mem.get(url); if (c && Date.now() - c.t < ttl) return Promise.resolve(c.v); }
+    if (this.inflight.has(url)) return this.inflight.get(url);
+    const p = new Promise((res, rej) => { this.q.push({ url, res, rej, timeout, ttl }); this.pump(); });
+    this.inflight.set(url, p); p.finally(() => this.inflight.delete(url)).catch(()=>{});
+    return p;
+  },
+  pump(){ while (this.active < this.max && this.q.length){ const j = this.q.shift(); this.active++; this.run(j).finally(() => { this.active--; this.pump(); }); } },
+  async run(j){
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), j.timeout);
+    try { const r = await fetch(j.url, { signal: ctl.signal, cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); const v = await r.json(); if (j.ttl) this.mem.set(j.url, { t: Date.now(), v }); j.res(v); }
+    catch (e){ j.rej(e.name === 'AbortError' ? new Error('timeout') : e); }
+    finally { clearTimeout(t); }
+  }
+};
+function lsGet(k, maxAge){ try { const o = JSON.parse(localStorage.getItem(k)); if (o && Date.now() - o.t < maxAge) return o.v; } catch {} return undefined; }
+function lsSet(k, v){ try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), v })); } catch {} }
+function ok(src){ S.health[src] = { ok: Date.now(), err: null }; }
+function bad(src, e){ S.health[src] = Object.assign({}, S.health[src], { errAt: Date.now(), err: String(e && e.message || e) }); }
+
+/* ---------- IndexedDB history store ---------- */
+const DB = {
+  db: null,
+  open(){ return new Promise(res => {
+    try {
+      const r = indexedDB.open('hoops-lab', 1);
+      r.onupgradeneeded = () => { const d = r.result; d.createObjectStore('snaps', { keyPath: ['gid','ts'] }); d.createObjectStore('odds', { keyPath: ['gid','src','ts'] }); d.createObjectStore('games', { keyPath: 'gid' }); };
+      r.onsuccess = () => { this.db = r.result; res(true); }; r.onerror = () => res(false);
+    } catch { res(false); }
+  }); },
+  put(store, obj){ if (!this.db) return Promise.resolve(); return new Promise(res => { try { const tx = this.db.transaction(store, 'readwrite'); tx.objectStore(store).put(obj); tx.oncomplete = () => res(); tx.onerror = () => res(); } catch { res(); } }); },
+  get(store, key){ if (!this.db) return Promise.resolve(null); return new Promise(res => { try { const r = this.db.transaction(store).objectStore(store).get(key); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); } catch { res(null); } }); },
+  all(store){ if (!this.db) return Promise.resolve([]); return new Promise(res => { try { const r = this.db.transaction(store).objectStore(store).getAll(); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); } catch { res([]); } }); },
+  byGame(store, gid){ if (!this.db) return Promise.resolve([]); return new Promise(res => { try { const lo = store === 'odds' ? [gid, '', 0] : [gid, 0]; const hi = store === 'odds' ? [gid, '￿', Infinity] : [gid, Infinity]; const r = this.db.transaction(store).objectStore(store).getAll(IDBKeyRange.bound(lo, hi)); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); } catch { res([]); } }); },
+  clear(){ if (!this.db) return Promise.resolve(); return Promise.all(['snaps','odds','games'].map(s => new Promise(res => { const tx = this.db.transaction(s, 'readwrite'); tx.objectStore(s).clear(); tx.oncomplete = res; tx.onerror = res; }))); }
+};
+
+/* =========================================================================
+   CLOCK HELPERS (D1 men: two 20:00 halves, 5:00 overtimes)
+   ========================================================================= */
+function parseClock(s){ if (s == null) return null; if (typeof s === 'number') return s; const m = String(s).match(/(\d+):(\d+(\.\d+)?)/); if (m) return +m[1]*60 + +m[2]; const v = parseFloat(s); return isFinite(v) ? v : null; }
+function elapsedOf(period, clockSec){ if (period <= 2) return (period-1)*1200 + (1200 - clockSec); return 2400 + (period-3)*300 + (300 - clockSec); }
+function remainingOf(period, clockSec){ return period <= 2 ? (2-period)*1200 + clockSec : clockSec; }
+function periodName(p){ return p === 1 ? '1st' : p === 2 ? '2nd' : p === 3 ? 'OT' : (p-2) + 'OT'; }
+
+/* =========================================================================
+   ESPN ADAPTER + PARSERS
+   ========================================================================= */
+function statArr(arr){ const m = {}; for (const s of arr || []) { if (s && s.name) m[s.name] = s.displayValue ?? s.value; } return m; }
+
+function parseEspnOdds(o, g){
+  if (!o) return null;
+  const book = (o.provider && o.provider.name) || 'ESPN odds feed';
+  const total = num(o.total?.over?.close?.line) ?? num(o.overUnder);
+  const openTotal = num(o.total?.over?.open?.line);
+  let homeSpread = num(o.pointSpread?.home?.close?.line);
+  const openHomeSpread = num(o.pointSpread?.home?.open?.line);
+  if (homeSpread == null){
+    const sp = num(o.spread);
+    if (sp != null){
+      if (o.homeTeamOdds?.favorite === true) homeSpread = -Math.abs(sp);
+      else if (o.awayTeamOdds?.favorite === true) homeSpread = Math.abs(sp);
+      else {
+        const m = String(o.details || '').match(/^(.+?)\s+([+\-]?\d+(\.\d+)?)$/);
+        if (m){ const ab = m[1].trim().toUpperCase(), v = Math.abs(+m[2]);
+          if (g && ab === String(g.home.abbr).toUpperCase()) homeSpread = -v; else if (g && ab === String(g.away.abbr).toUpperCase()) homeSpread = v; else homeSpread = sp; }
+        else homeSpread = sp;
+      }
+    } else if (/^(even|pk|pick)/i.test(String(o.details || ''))) homeSpread = 0;
+  }
+  const r = {
+    src: 'espn', book, total, homeSpread,
+    mlH: num(o.moneyline?.home?.close?.odds) ?? num(o.homeTeamOdds?.moneyLine),
+    mlA: num(o.moneyline?.away?.close?.odds) ?? num(o.awayTeamOdds?.moneyLine),
+    spOddsH: num(o.pointSpread?.home?.close?.odds) ?? num(o.homeTeamOdds?.spreadOdds),
+    spOddsA: num(o.pointSpread?.away?.close?.odds) ?? num(o.awayTeamOdds?.spreadOdds),
+    overOdds: num(o.total?.over?.close?.odds) ?? num(o.overOdds),
+    underOdds: num(o.total?.under?.close?.odds) ?? num(o.underOdds),
+    open: { total: openTotal, homeSpread: openHomeSpread, mlH: num(o.moneyline?.home?.open?.odds), mlA: num(o.moneyline?.away?.open?.odds) },
+    details: o.details || null, ts: Date.now()
+  };
+  if (r.total == null && r.homeSpread == null && r.mlH == null) return null;
+  return r;
+}
+
+function parseEvent(ev){
+  const comp = (ev.competitions || [])[0] || {};
+  const st = ev.status || comp.status || {}; const type = st.type || {};
+  const cs = comp.competitors || [];
+  const Hc = cs.find(c => c.homeAway === 'home') || cs[0] || {}, Ac = cs.find(c => c.homeAway === 'away') || cs[1] || {};
+  const team = c => { const t = c.team || {}; const rk = c.curatedRank?.current;
+    const rec = (c.records || []).find(r => r.type === 'total' || r.name === 'overall' || r.name === 'All Splits') || (c.records || [])[0];
+    return { id: String(t.id || ''), abbr: t.abbreviation || '', name: t.displayName || t.name || 'TBD', short: t.shortDisplayName || t.location || t.name || 'TBD', location: t.location || '', logo: t.logo || '', confId: t.conferenceId ? String(t.conferenceId) : null,
+      rank: rk && rk <= 25 ? rk : null, record: rec ? rec.summary : null, score: c.score != null && c.score !== '' ? +c.score : null,
+      lines: (c.linescores || []).map(l => num(l.value ?? l.displayValue)) }; };
+  let status = type.state === 'pre' ? 'pre' : type.state === 'post' ? 'post' : 'in';
+  if (type.name === 'STATUS_HALFTIME') status = 'half';
+  const special = /POSTPONED|CANCELED|CANCELLED|SUSPENDED|DELAYED|FORFEIT/.test(type.name || '') ? (type.description || type.name) : null;
+  if (special && status !== 'post') status = 'other';
+  const period = st.period || 0; const clock = num(st.clock) ?? parseClock(st.displayClock) ?? 0;
+  const g = { gid: String(ev.id), date: ev.date, name: ev.shortName || ev.name, status, special,
+    detail: type.shortDetail || type.detail || '', period, clock, displayClock: st.displayClock || '',
+    neutral: !!comp.neutralSite, confGame: !!comp.conferenceCompetition, venue: comp.venue?.fullName || '',
+    broadcast: (comp.broadcasts || []).flatMap(b => b.names || []).join(', ') || (comp.geoBroadcasts || []).map(b => b.media?.shortName).filter(Boolean).join(', '),
+    notes: (comp.notes || []).map(n => n.headline).filter(Boolean).join(' · '),
+    home: team(Hc), away: team(Ac), possession: comp.situation?.possession ? String(comp.situation.possession) : null,
+    ts: Date.now() };
+  g.odds = parseEspnOdds((comp.odds || [])[0], g);
+  return g;
+}
+
+function boxTotals(teamBox, playersGroup){
+  const m = statArr(teamBox && teamBox.statistics);
+  const pair = k => { const v = m[k]; if (v == null || !String(v).includes('-')) return [null, null]; const [a, b] = String(v).split('-').map(Number); return [isFinite(a) ? a : null, isFinite(b) ? b : null]; };
+  const n = k => num(m[k]);
+  let [fgm, fga] = pair('fieldGoalsMade-fieldGoalsAttempted'); let [tpm, tpa] = pair('threePointFieldGoalsMade-threePointFieldGoalsAttempted'); let [ftm, fta] = pair('freeThrowsMade-freeThrowsAttempted');
+  const t = { fgm, fga, tpm, tpa, ftm, fta, orb: n('offensiveRebounds'), drb: n('defensiveRebounds'), trb: n('totalRebounds') ?? n('rebounds'), ast: n('assists'), stl: n('steals'), blk: n('blocks'),
+    to: n('totalTurnovers') ?? n('turnovers'), pf: n('fouls') ?? n('personalFouls'), paint: n('pointsInPaint'), fastbreak: n('fastBreakPoints'), second: n('secondChancePoints'), toPts: n('turnoverPoints'), lead: n('largestLead') };
+  // Fall back to player totals row if team box is missing pieces
+  if (playersGroup && playersGroup.totals){ const T = playersGroup.totals; const sp = v => v && String(v).includes('-') ? String(v).split('-').map(Number) : [null, null];
+    if (t.fga == null){ [t.fgm, t.fga] = sp(T.FG); } if (t.tpa == null){ [t.tpm, t.tpa] = sp(T['3PT']); } if (t.fta == null){ [t.ftm, t.fta] = sp(T.FT); }
+    if (t.orb == null) t.orb = num(T.OREB); if (t.drb == null) t.drb = num(T.DREB); if (t.trb == null) t.trb = num(T.REB); if (t.ast == null) t.ast = num(T.AST);
+    if (t.stl == null) t.stl = num(T.STL); if (t.blk == null) t.blk = num(T.BLK); if (t.to == null) t.to = num(T.TO); if (t.pf == null) t.pf = num(T.PF); }
+  return t;
+}
+
+function parsePlayers(group){
+  const s = (group && group.statistics || [])[0]; if (!s) return null;
+  const names = (s.labels && s.labels.length ? s.labels : s.names) || [];
+  const rows = (s.athletes || []).map(a => ({ id: a.athlete?.id, name: a.athlete?.displayName || a.athlete?.shortName || '—', short: a.athlete?.shortName || a.athlete?.displayName,
+    pos: a.athlete?.position?.abbreviation || '', jersey: a.athlete?.jersey || '', starter: !!a.starter, dnp: !!a.didNotPlay || !(a.stats && a.stats.length), reason: a.reason || '',
+    v: Object.fromEntries(names.map((k, i) => [k, (a.stats || [])[i]])) }));
+  return { names, rows, totals: s.totals ? Object.fromEntries(names.map((k, i) => [k, s.totals[i]])) : null, teamId: String(group.team?.id || '') };
+}
+
+function classifyPlay(p){
+  const txt = ((p.text || '') + ' ' + (p.type?.text || '')).toLowerCase();
+  let kind = null, three = false, shot = null;
+  const made = p.scoringPlay === true || /\b(made|makes)\b/.test(txt);
+  if (/free throw/.test(txt)) kind = 'ft';
+  else if (p.shootingPlay === true || /(jumper|jump shot|layup|lay-up|dunk|tip shot|tip-in|three point|3-pt|hook shot|two point)/.test(txt)) {
+    kind = 'fg'; three = p.scoreValue === 3 || /(three point|3-pt|3pt|three pointer)/.test(txt);
+    shot = three ? 'three' : /dunk/.test(txt) ? 'dunk' : /(layup|lay-up)/.test(txt) ? 'layup' : /tip/.test(txt) ? 'tip' : /hook/.test(txt) ? 'hook' : /(jumper|jump shot)/.test(txt) ? 'jumper' : 'two';
+  }
+  else if (/turnover|traveling|bad pass|lost ball|shot clock|offensive charge|out of bounds/.test(txt)) kind = 'to';
+  else if (/offensive rebound/.test(txt)) kind = 'orb';
+  else if (/defensive rebound/.test(txt)) kind = 'drb';
+  else if (/foul/.test(txt)) kind = 'foul';
+  return { kind, made, three, shot };
+}
+
+function parsePlays(plays){
+  return (plays || []).map(p => {
+    const period = p.period?.number || 1; const c = parseClock(p.clock?.displayValue ?? p.clock?.value) ?? 0;
+    const k = classifyPlay(p);
+    return { id: p.id, period, clock: p.clock?.displayValue || '', el: elapsedOf(period, c), h: num(p.homeScore), a: num(p.awayScore), team: p.team?.id ? String(p.team.id) : null, text: p.text || p.type?.text || '', scoring: !!p.scoringPlay, ...k };
+  });
+}
+
+/* Possessions counted from play-by-play: a team's possession starts whenever an offensive action (FG attempt, FT, turnover)
+   belongs to a different team than the previous offensive action, resetting at each period. */
+function countPossessions(pl, hId, aId){
+  if (!pl || pl.length < 15) return null;
+  const withTeam = pl.filter(p => p.team && (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to'));
+  if (withTeam.length < 10) return null;
+  const c = { [hId]: 0, [aId]: 0 }; let last = null, per = null; const series = [{ el: 0, h: 0, a: 0 }];
+  for (const p of withTeam){
+    if (p.period !== per){ per = p.period; last = null; }
+    if (p.team !== last && (p.team === hId || p.team === aId)){ c[p.team]++; last = p.team; series.push({ el: p.el, h: c[hId], a: c[aId] }); }
+  }
+  return { h: c[hId], a: c[aId], series };
+}
+
+function teamFoulsThisHalf(pl, teamId, period){
+  if (!pl) return null; const fouls = pl.filter(p => p.kind === 'foul' && p.team === teamId && (period <= 2 ? p.period === period : p.period >= 2)); return fouls.length;
+}
+
+function shotQuality(pl, teamId){
+  if (!pl) return null; let x = 0, n = 0, actual = 0;
+  for (const p of pl){ if (p.kind !== 'fg' || p.team !== teamId) continue; n++; const v = p.three ? 3 : 2; x += (SHOT_BASE[p.shot] ?? SHOT_BASE.two) * v; if (p.made) actual += v; }
+  return n >= 8 ? { xPts: x, actual, n } : null;
+}
+
+async function fetchScoreboard(date){
+  const url = `${ESPN}/scoreboard?dates=${ymd(date)}&groups=50&limit=500`;
+  try { const j = await Net.get(url, { timeout: 15000 }); ok('scoreboard'); return (j.events || []).map(parseEvent); }
+  catch (e){ bad('scoreboard', e); throw e; }
+}
+
+async function fetchSummary(gid){
+  const url = `${ESPN}/summary?event=${gid}`;
+  try {
+    const j = await Net.get(url, { timeout: 15000 }); ok('summary');
+    const g = S.games.get(gid);
+    const hdr = j.header?.competitions?.[0];
+    const homeId = g ? g.home.id : String((hdr?.competitors || []).find(c => c.homeAway === 'home')?.id || '');
+    const awayId = g ? g.away.id : String((hdr?.competitors || []).find(c => c.homeAway === 'away')?.id || '');
+    const tb = j.boxscore?.teams || []; const pg = j.boxscore?.players || [];
+    const pH = parsePlayers(pg.find(x => String(x.team?.id) === homeId)), pA = parsePlayers(pg.find(x => String(x.team?.id) === awayId));
+    const totH = boxTotals(tb.find(x => String(x.team?.id) === homeId), pH), totA = boxTotals(tb.find(x => String(x.team?.id) === awayId), pA);
+    const plays = parsePlays(j.plays);
+    const pick = (j.pickcenter || []).map(o => parseEspnOdds(o, g)).filter(Boolean);
+    const wp = (j.winprobability || []).map(w => ({ pid: w.playId, hw: num(w.homeWinPercentage) })).filter(w => w.hw != null);
+    const det = { ts: Date.now(), homeId, awayId, totH, totA, pH, pA, plays, poss: countPossessions(plays, homeId, awayId), pick, wp,
+      predictor: j.predictor ? { h: num(j.predictor.homeTeam?.gameProjection), a: num(j.predictor.awayTeam?.gameProjection) } : null,
+      injuries: (j.injuries || []).map(t => ({ team: String(t.team?.id || ''), list: (t.injuries || []).map(i => `${i.athlete?.displayName || '?'} (${i.status || i.type?.description || '?'})`) })),
+      hasBox: tb.length > 0 && totH.fga != null };
+    S.details.set(gid, det);
+    return det;
+  } catch (e){ bad('summary', e); throw e; }
+}
+
+/* Conference names + season scoring (points for/against) from standings */
+async function loadStandings(season){
+  const key = 'hl.stand.' + season; const cached = lsGet(key, season === currentSeason() ? 6*3600e3 : 7*86400e3);
+  if (cached) return cached;
+  try {
+    const j = await Net.get(`${ESPN_V2}/standings?season=${season}`, { timeout: 20000 });
+    const out = { conf: {}, pts: {} };
+    const walk = (node, confName, confAbbr) => {
+      if (!node) return; const nm = node.name && node.standings ? node.name : confName; const ab = node.standings ? (node.abbreviation || node.shortName || node.name) : confAbbr;
+      for (const e of node.standings?.entries || []){ const id = String(e.team?.id || ''); if (!id) continue; out.conf[id] = { name: nm, abbr: ab };
+        const sm = {}; for (const s of e.stats || []) sm[s.name || s.type] = num(s.value ?? s.displayValue);
+        out.pts[id] = { pf: sm.avgPointsFor, pa: sm.avgPointsAgainst, gp: sm.gamesPlayed ?? ((sm.wins ?? 0) + (sm.losses ?? 0)) }; }
+      for (const ch of node.children || []) walk(ch, nm, ab);
+    };
+    walk(j, null, null); lsSet(key, out); ok('priors'); return out;
+  } catch (e){ bad('priors', e); return null; }
+}
+function currentSeason(){ const d = new Date(S.date + 'T12:00:00'); return d.getMonth() >= 7 ? d.getFullYear() + 1 : d.getFullYear(); }
+
+function flattenStats(j){ const m = {}; const walk = o => { if (!o || typeof o !== 'object') return; if (Array.isArray(o)) { o.forEach(walk); return; }
+  if (typeof o.name === 'string' && (o.value != null) && typeof o.value !== 'object' && !(o.name in m)) m[o.name] = num(o.value);
+  for (const k in o) if (o[k] && typeof o[k] === 'object') walk(o[k]); }; walk(j); return m; }
+
+function priorFromStats(m, pts){
+  if (!m) return null; const gp = m.gamesPlayed || pts?.gp || null;
+  const per = (avgK, totK) => m[avgK] ?? (m[totK] != null && gp ? m[totK]/gp : null);
+  const fga = per('avgFieldGoalsAttempted','fieldGoalsAttempted'), fgm = per('avgFieldGoalsMade','fieldGoalsMade');
+  const tpa = per('avgThreePointFieldGoalsAttempted','threePointFieldGoalsAttempted'), tpm = per('avgThreePointFieldGoalsMade','threePointFieldGoalsMade');
+  const fta = per('avgFreeThrowsAttempted','freeThrowsAttempted'), ftm = per('avgFreeThrowsMade','freeThrowsMade');
+  const orb = per('avgOffensiveRebounds','offensiveRebounds'), to = per('avgTurnovers','turnovers') ?? per('avgTotalTurnovers','totalTurnovers');
+  const ppg = m.avgPoints ?? pts?.pf ?? null; const papg = pts?.pa ?? null;
+  if (!gp || fga == null || orb == null || to == null || fta == null) return null;
+  const poss = fga - orb + to + 0.475*fta;
+  return { gp, pace: poss, ortg: ppg != null ? ppg/poss*100 : null, drtg: papg != null ? papg/poss*100 : null,
+    tp: tpa ? tpm/tpa : null, tpaTot: tpa*gp, ft: fta ? ftm/fta : null, ftaTot: fta*gp, twop: (fga-tpa) ? (fgm-tpm)/(fga-tpa) : null, twoaTot: (fga-tpa)*gp };
+}
+
+async function teamSeason(teamId, season, stand){
+  const key = `hl.ts.${teamId}.${season}`; const cached = lsGet(key, season === currentSeason() ? 12*3600e3 : 14*86400e3);
+  if (cached !== undefined) return cached;
+  try { const j = await Net.get(`${ESPN}/teams/${teamId}/statistics?season=${season}`, { timeout: 15000 });
+    const p = priorFromStats(flattenStats(j), stand?.pts?.[teamId]); lsSet(key, p); return p; }
+  catch (e){ return null; }
+}
+
+/* Team prior = current-season stats blended with last season (weight on current grows with games played) */
+async function loadPrior(teamId){
+  if (!teamId || S.priors.has(teamId)) return S.priors.get(teamId);
+  S.priors.set(teamId, undefined);
+  const cs = currentSeason();
+  const [stC, stP] = await Promise.all([loadStandings(cs), loadStandings(cs - 1)]);
+  const [cur, prev] = await Promise.all([teamSeason(teamId, cs, stC), teamSeason(teamId, cs - 1, stP)]);
+  let out = null;
+  if (cur || prev){
+    const w = cur ? (prev ? cur.gp/(cur.gp + 8) : 1) : 0;
+    const bl = k => { const a = cur?.[k], b = prev?.[k]; if (a == null) return b ?? null; if (b == null) return a; return a*w + b*(1-w); };
+    out = { pace: bl('pace'), ortg: bl('ortg'), drtg: bl('drtg'), tp: bl('tp'), ft: bl('ft'), twop: bl('twop'),
+      tpaTot: (cur?.tpaTot || 0) + (prev?.tpaTot || 0)*0.5, ftaTot: (cur?.ftaTot || 0) + (prev?.ftaTot || 0)*0.5, twoaTot: (cur?.twoaTot || 0) + (prev?.twoaTot || 0)*0.5,
+      src: cur && prev ? `${cs-1} & ${cs} seasons (current weight ${Math.round(w*100)}%)` : cur ? `${cs} season only` : `${cs-1} season only (no ${cs} data yet)`, gpCur: cur?.gp || 0 };
+  }
+  S.priors.set(teamId, out); ok('priors');
+  return out;
+}
+
+/* ---------- optional extra odds feed (user's own backend proxy, The Odds API v4 shape) ---------- */
+async function fetchProxyOdds(){
+  const url = S.settings.proxy; if (!url) return;
+  try {
+    const j = await Net.get(url, { timeout: 15000 }); ok('proxy');
+    const evs = Array.isArray(j) ? j : (j.data || []);
+    const byKey = new Map(); for (const g of S.games.values()) byKey.set(normName(g.home.name) + '|' + normName(g.away.name), g);
+    const findGame = (h, a) => { const k = normName(h) + '|' + normName(a); if (byKey.has(k)) return byKey.get(k);
+      for (const g of S.games.values()){ const H = normName(g.home.location), A = normName(g.away.location); if (H && A && normName(h).startsWith(H) && normName(a).startsWith(A)) return g; } return null; };
+    S.extraOdds.clear();
+    for (const ev of evs){
+      const g = findGame(ev.home_team, ev.away_team); if (!g) continue; const list = [];
+      for (const b of ev.bookmakers || []){
+        const mk = k => (b.markets || []).find(m => m.key === k);
+        const h2h = mk('h2h'), sp = mk('spreads'), to = mk('totals');
+        const o = (m, nm) => m && (m.outcomes || []).find(x => x.name === nm);
+        const r = { src: 'proxy:' + b.key, book: b.title || b.key, ts: Date.parse(b.last_update) || Date.now(), live: Date.parse(ev.commence_time) < Date.now(),
+          mlH: o(h2h, ev.home_team)?.price ?? null, mlA: o(h2h, ev.away_team)?.price ?? null,
+          homeSpread: o(sp, ev.home_team)?.point ?? null, spOddsH: o(sp, ev.home_team)?.price ?? null, spOddsA: o(sp, ev.away_team)?.price ?? null,
+          total: o(to, 'Over')?.point ?? null, overOdds: o(to, 'Over')?.price ?? null, underOdds: o(to, 'Under')?.price ?? null, open: {} };
+        list.push(r); recordOdds(g, r);
+      }
+      S.extraOdds.set(g.gid, list);
+    }
+  } catch (e){ bad('proxy', e); }
+}
+
+/* Record line snapshots (only when a value changes) for line-movement history */
+function recordOdds(g, o){
+  if (!o) return; const key = g.gid + '|' + o.src + '|' + o.book;
+  const sig = [o.homeSpread, o.total, o.mlH, o.mlA].join(',');
+  if (S.oddsSeen.get(key) === sig) return; S.oddsSeen.set(key, sig);
+  DB.put('odds', { gid: g.gid, src: o.src + '|' + o.book, ts: Date.now(), status: g.status, el: gameElapsed(g), homeSpread: o.homeSpread, total: o.total, mlH: o.mlH, mlA: o.mlA, h: g.home.score, a: g.away.score });
+}
+
+/* =========================================================================
+   ANALYTICS
+   ========================================================================= */
+function gameElapsed(g){ if (g.status === 'pre' || g.status === 'other') return 0; if (g.status === 'half') return 1200; if (g.status === 'post') return g.period > 2 ? 2400 + (g.period-2)*300 : 2400; return elapsedOf(g.period || 1, g.clock ?? 0); }
+
+function estPoss(t){ if (!t || t.fga == null || t.orb == null || t.to == null || t.fta == null) return null; return t.fga - t.orb + t.to + 0.475*t.fta; }
+
+function advanced(t, o, pts, oppPts, poss){
+  if (!t) return {};
+  const efg = t.fga ? (t.fgm + 0.5*t.tpm)/t.fga : null;
+  const ts = (t.fga != null && t.fta != null && (t.fga + 0.475*t.fta)) ? pts/(2*(t.fga + 0.475*t.fta)) : null;
+  return { efg, ts, ppp: poss ? pts/poss : null, ortg: poss ? pts/poss*100 : null, drtg: poss ? oppPts/poss*100 : null,
+    tov: poss && t.to != null ? t.to/poss : null, orbPct: (t.orb != null && o && o.drb != null && (t.orb + o.drb)) ? t.orb/(t.orb + o.drb) : null,
+    ftr: t.fga ? t.fta/t.fga : null, fgp: t.fga ? t.fgm/t.fga : null, tpp: t.tpa ? t.tpm/t.tpa : null, ftp: t.fta ? t.ftm/t.fta : null };
+}
+
+/* Adjusted luck: compare made shots to expected makes given team history (shrunk to D1 average).
+   Only a share of each deviation is labeled luck (LUCK_SHARE) – the rest is treated as real signal. */
+function luckFor(t, prior){
+  if (!t || t.fga == null) return null;
+  const p3 = shrink(prior?.tp, prior?.tpaTot, LEAGUE.tp, 250), pf = shrink(prior?.ft, prior?.ftaTot, LEAGUE.ft, 120), p2 = shrink(prior?.twop, prior?.twoaTot, LEAGUE.twop, 200);
+  const tpa = t.tpa || 0, tpm = t.tpm || 0, fta = t.fta || 0, ftm = t.ftm || 0, twoa = t.fga - tpa, twom = t.fgm - tpm;
+  const d3 = (tpm - tpa*p3)*3, dF = ftm - fta*pf, d2 = (twom - twoa*p2)*2;
+  const v3 = tpa*p3*(1-p3)*9, vF = fta*pf*(1-pf), v2 = twoa*p2*(1-p2)*4;
+  const luck = d3*LUCK_SHARE.three + dF*LUCK_SHARE.ft + d2*LUCK_SHARE.two;
+  const sd = Math.sqrt(v3*LUCK_SHARE.three**2 + vF*LUCK_SHARE.ft**2 + v2*LUCK_SHARE.two**2);
+  return { exp3: p3, expFt: pf, exp2: p2, d3, dF, d2, luck, sd, z: sd ? luck/sd : 0, expPts: null,
+    raw: d3 + dF + d2, act3: tpa ? tpm/tpa : null, actFt: fta ? ftm/fta : null, act2: twoa ? twom/twoa : null, priorKnown: !!prior };
+}
+function luckLabel(z){ const a = Math.abs(z); if (a < 1) return 'Within normal variance'; const dir = z > 0 ? 'hot' : 'cold'; return a < 2 ? `Running ${dir}` : `Strongly ${dir}`; }
+
+function samplePts(ppp, needThree, rnd){
+  const s = clamp((ppp - 0.04)/1.05, 0.4, 1.6);
+  let p1 = 0.04, p2 = 0.33*s, p3 = 0.13*s;
+  if (needThree){ p3 = 0.22*s; p2 = 0.20*s; }
+  const r = rnd(); if (r < p3) return 3; if (r < p3 + p2) return 2; if (r < p3 + p2 + p1) return 1; return 0;
+}
+
+/* Monte Carlo of the remaining game, possession by possession, with late-game fouling, end-game holding and overtime. */
+function simulate(inp, n){
+  let seed = 1234567 + (inp.seed || 0); const rnd = () => { seed = (seed*1664525 + 1013904223) >>> 0; return seed/4294967296; };
+  const hs = [], as = [], ph = [], pa = []; let hw = 0, ots = 0;
+  const avgDur = 2400/(2*inp.pace);
+  for (let i = 0; i < n; i++){
+    let h = inp.h, a = inp.a, t = inp.rem, pos = inp.poss || (rnd() < 0.5 ? 'h' : 'a'), otc = 0, nh = 0, na = 0;
+    if (inp.inOT) otc = 1;
+    for (;;){
+      while (t > 0){
+        const lead = pos === 'h' ? h - a : a - h; let pts, dur;
+        if (t <= 60 && lead > 0 && lead <= 8 && rnd() < 0.85){ const ft = pos === 'h' ? inp.ftH : inp.ftA; pts = (rnd() < ft ? 1 : 0) + (rnd() < ft ? 1 : 0); dur = 3 + rnd()*5; }
+        else { const ppp = (pos === 'h' ? inp.hPPP : inp.aPPP) + (t > inp.rem - inp.bonusWindow ? (pos === 'h' ? inp.bonusH : inp.bonusA) : 0);
+          pts = samplePts(ppp, t <= 60 && lead < 0 && lead >= -8 && lead <= -3, rnd);
+          dur = avgDur*(0.55 + rnd()*0.9); if (lead > 0 && t <= 45) dur = Math.max(dur, Math.min(t, 26 + rnd()*6)); if (lead < 0 && t <= 60) dur = Math.min(dur, 9 + rnd()*6); }
+        if (pos === 'h'){ h += pts; nh++; } else { a += pts; na++; }
+        t -= dur; pos = pos === 'h' ? 'a' : 'h';
+      }
+      if (h !== a || otc >= 6) break;
+      otc++; t = 300; pos = rnd() < 0.5 ? 'h' : 'a';
+    }
+    if (h === a) h += rnd() < 0.5 ? 1 : 0; // ultra-rare 6OT tie guard
+    hs.push(h); as.push(a); ph.push(nh); pa.push(na); if (h > a) hw++; if (otc > (inp.inOT ? 1 : 0)) ots++;
+  }
+  return { hs, as, ph, pa, hw: hw/n, ot: ots/n, n };
+}
+
+function pregameModel(g){
+  const H = S.priors.get(g.home.id), A = S.priors.get(g.away.id);
+  const det = S.details.get(g.gid);
+  const ln = g.pregameLine || g.odds || null;
+  let ratings = null, market = null;
+  if (H && A && H.pace && A.pace && H.ortg && A.ortg && H.drtg && A.drtg){
+    const pace = H.pace*A.pace/LEAGUE.pace; const hca = g.neutral ? 0 : LEAGUE.hcaPts;
+    ratings = { pace, h: pace*(H.ortg*A.drtg/LEAGUE.eff)/100 + hca/2, a: pace*(A.ortg*H.drtg/LEAGUE.eff)/100 - hca/2 };
+  }
+  if (ln && ln.total != null && ln.homeSpread != null) market = { h: (ln.total - ln.homeSpread)/2, a: (ln.total + ln.homeSpread)/2 };
+  let out;
+  if (market && ratings) out = { h: 0.75*market.h + 0.25*ratings.h, a: 0.75*market.a + 0.25*ratings.a, pace: ratings.pace, src: 'Market line (75%) + team ratings (25%)' };
+  else if (market) out = { h: market.h, a: market.a, pace: H?.pace && A?.pace ? H.pace*A.pace/LEAGUE.pace : (market.h + market.a)/(2*LEAGUE.ppp), src: 'Market line only (team ratings unavailable)' };
+  else if (ratings) out = { h: ratings.h, a: ratings.a, pace: ratings.pace, src: 'Team ratings only (no line available)' };
+  else { const hca = g.neutral ? 0 : LEAGUE.hcaPts; out = { h: LEAGUE.pace*LEAGUE.ppp + hca/2, a: LEAGUE.pace*LEAGUE.ppp - hca/2, pace: LEAGUE.pace, src: 'League-average baseline only (low confidence)', weak: true }; }
+  out.hPPP = out.h/out.pace; out.aPPP = out.a/out.pace; out.ratings = ratings; out.market = market;
+  return out;
+}
+
+function currentLine(g){
+  const ex = S.extraOdds.get(g.gid) || [];
+  const det = S.details.get(g.gid);
+  const espn = (det && det.pick && det.pick[0]) || g.odds;
+  return ex.find(o => o.total != null || o.homeSpread != null) || espn || null;
+}
+
+function project(g){
+  const det = S.details.get(g.gid); const pre = pregameModel(g);
+  const el = gameElapsed(g);
+  const res = { gid: g.gid, ts: Date.now(), pre, el, status: g.status };
+  if (g.status === 'other') return null;
+  if (g.status === 'post'){ res.final = true; return res; }
+  const H = S.priors.get(g.home.id), A = S.priors.get(g.away.id);
+  let hPPP = pre.hPPP, aPPP = pre.aPPP, pace = pre.pace, possH = 0, possA = 0, luckH = null, luckA = null;
+  const hPts = g.home.score || 0, aPts = g.away.score || 0;
+  if (el > 0 && det && det.hasBox){
+    const counted = det.poss; const eH = estPoss(det.totH), eA = estPoss(det.totA);
+    possH = counted ? counted.h : eH ?? 0; possA = counted ? counted.a : eA ?? 0;
+    res.possSource = counted ? 'counted from play-by-play' : 'estimated from box score';
+    luckH = luckFor(det.totH, H); luckA = luckFor(det.totA, A);
+    const wH = possH/(possH + 45), wA = possA/(possA + 45);
+    if (possH > 3) hPPP = (1-wH)*pre.hPPP + wH*clamp((hPts - (luckH?.luck || 0))/possH, 0.6, 1.6);
+    if (possA > 3) aPPP = (1-wA)*pre.aPPP + wA*clamp((aPts - (luckA?.luck || 0))/possA, 0.6, 1.6);
+    const obsPace = ((possH + possA)/2)/(el/2400); const wP = (el/60)/((el/60) + 14);
+    if (el > 90) pace = (1-wP)*pre.pace + wP*clamp(obsPace, 50, 90);
+    res.obsPace = obsPace;
+  } else if (el > 0){ res.possSource = 'no box score yet — pregame pace used'; }
+  // foul trouble & bonus (current half)
+  let bonusH = 0, bonusA = 0, bonusWindow = 0; res.fouls = null;
+  if (det && det.plays && det.plays.length && g.status === 'in'){
+    const fH = teamFoulsThisHalf(det.plays, g.home.id, g.period), fA = teamFoulsThisHalf(det.plays, g.away.id, g.period);
+    res.fouls = { h: fH, a: fA };
+    // Opponent fouls put a team in the bonus (7 = 1-and-1, 10 = double bonus); small PPP boost for the rest of this half.
+    bonusH = fA >= 10 ? 0.05 : fA >= 7 ? 0.03 : 0; bonusA = fH >= 10 ? 0.05 : fH >= 7 ? 0.03 : 0;
+    bonusWindow = g.period <= 2 ? remainingOf(g.period, g.clock) - (g.period === 1 ? 1200 : 0) : remainingOf(g.period, g.clock);
+    const trouble = (p) => (p?.rows || []).filter(r => r.starter && num(r.v.PF) >= (g.period === 1 ? 3 : 4)).map(r => r.short + ' (' + r.v.PF + ' PF)');
+    res.foulTrouble = { h: trouble(det.pH), a: trouble(det.pA) };
+    hPPP -= 0.008*res.foulTrouble.h.length; aPPP -= 0.008*res.foulTrouble.a.length;
+  }
+  const rem = g.status === 'pre' ? 2400 : g.status === 'half' ? 1200 : remainingOf(g.period || 1, g.clock ?? 0);
+  const ftH = shrink(H?.ft, H?.ftaTot, LEAGUE.ft, 120), ftA = shrink(A?.ft, A?.ftaTot, LEAGUE.ft, 120);
+  let poss = g.possession === g.home.id ? 'h' : g.possession === g.away.id ? 'a' : null;
+  const sim = simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP, aPPP, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims);
+  const tot = sim.hs.map((h, i) => h + sim.as[i]).sort((x, y) => x - y); const mar = sim.hs.map((h, i) => h - sim.as[i]).sort((x, y) => x - y);
+  Object.assign(res, { hPPP, aPPP, pace, possH, possA, luckH, luckA, n: sim.n,
+    projH: mean(sim.hs), projA: mean(sim.as), projT: mean(tot), projM: mean(mar), pHome: sim.hw, pOT: sim.ot,
+    t10: quant(tot, 0.1), t90: quant(tot, 0.9), m10: quant(mar, 0.1), m90: quant(mar, 0.9),
+    projPossH: possH + mean(sim.ph), projPossA: possA + mean(sim.pa),
+    naiveT: el > 120 ? (hPts + aPts)*2400/el : null });
+  const ln = currentLine(g);
+  if (ln){
+    res.line = ln;
+    if (ln.homeSpread != null){ let c = 0, p = 0; for (const m of mar){ const v = m + ln.homeSpread; if (v > 0) c++; else if (v === 0) p++; } res.pCoverH = c/mar.length; res.pPush = p/mar.length; }
+    if (ln.total != null){ let o = 0, p = 0; for (const t of tot){ if (t > ln.total) o++; else if (t === ln.total) p++; } res.pOver = o/tot.length; res.pPushT = p/tot.length; }
+  }
+  return res;
+}
+
+/* =========================================================================
+   HISTORY LOGGING (projections + results for model validation)
+   ========================================================================= */
+function logSnapshot(g, p){
+  if (!p) return;
+  const last = S.lastSnap.get(g.gid) || 0; const every = g.status === 'pre' ? 30*60e3 : 60e3;
+  const conf = confOf(g.home) || '';
+  const meta = { gid: g.gid, date: g.date, day: S.date, home: g.home.name, away: g.away.name, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, conf, confAway: confOf(g.away) || '', status: g.status,
+    h: g.home.score, a: g.away.score, period: g.period, pregameLine: g.pregameLine || null, updated: Date.now() };
+  if (g.status === 'post'){
+    const det = S.details.get(g.gid);
+    DB.get('games', g.gid).then(prev => {
+      if (prev && prev.status === 'post' && prev.finalPoss != null) return;
+      const fp = det ? (det.poss ? (det.poss.h + det.poss.a)/2 : ((estPoss(det.totH) ?? 0) + (estPoss(det.totA) ?? 0))/2 || null) : null;
+      DB.put('games', Object.assign({}, prev || {}, meta, { finalPoss: fp, ot: g.period > 2, pregameLine: (prev && prev.pregameLine) || meta.pregameLine }));
+    });
+    return;
+  }
+  if (g.status === 'pre' && g.odds){ g.pregameLine = g.odds; meta.pregameLine = g.odds; }
+  if (p.final || Date.now() - last < every || p.projT == null) return;
+  S.lastSnap.set(g.gid, Date.now());
+  DB.get('games', g.gid).then(prev => DB.put('games', Object.assign({}, prev || {}, meta, { pregameLine: (prev && prev.pregameLine) || meta.pregameLine })));
+  DB.put('snaps', { gid: g.gid, ts: Date.now(), el: p.el, status: g.status, h: g.home.score, a: g.away.score, projH: p.projH, projA: p.projA, projT: p.projT, projM: p.projM,
+    pHome: p.pHome, pOver: p.pOver ?? null, pCoverH: p.pCoverH ?? null, lineTotal: p.line?.total ?? null, lineSpread: p.line?.homeSpread ?? null,
+    projPoss: p.projPossH != null ? (p.projPossH + p.projPossA)/2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: p.pre.src });
+}
+
+/* =========================================================================
+   CHART (SVG line chart with hover crosshair)
+   ========================================================================= */
+let chartId = 0;
+function lineChart({ series, xMin = 0, xMax, yMin, yMax, h = 220, xFmt = v => v, yFmt = v => v, refs = [], yLabel = '', step = false }){
+  const id = 'ch' + (++chartId); const W = 720, H = h, L = 44, R = 14, T = 10, B = 26;
+  const pts = series.flatMap(s => s.points); if (!pts.length) return `<div class="note">No data yet.</div>`;
+  if (xMax == null) xMax = Math.max(...pts.map(p => p[0]), xMin + 1);
+  let lo = yMin ?? Math.min(...pts.map(p => p[1]), ...refs.map(r => r.y)), hi = yMax ?? Math.max(...pts.map(p => p[1]), ...refs.map(r => r.y));
+  if (hi === lo){ hi += 1; lo -= 1; } const pad = (hi - lo)*0.08; if (yMin == null) lo -= pad; if (yMax == null) hi += pad;
+  const X = v => L + (v - xMin)/(xMax - xMin)*(W - L - R), Y = v => T + (1 - (v - lo)/(hi - lo))*(H - T - B);
+  let g = '';
+  const ticks = 4; for (let i = 0; i <= ticks; i++){ const v = lo + (hi - lo)*i/ticks; g += `<line x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}" stroke="#34332f" stroke-width="1"/><text x="${L-6}" y="${Y(v)+4}" fill="#8f8e86" font-size="11" text-anchor="end">${yFmt(v)}</text>`; }
+  const xt = 5; for (let i = 0; i <= xt; i++){ const v = xMin + (xMax - xMin)*i/xt; g += `<text x="${X(v)}" y="${H-8}" fill="#8f8e86" font-size="11" text-anchor="middle">${xFmt(v)}</text>`; }
+  for (const r of refs){ g += `<line x1="${L}" x2="${W-R}" y1="${Y(r.y)}" y2="${Y(r.y)}" stroke="${r.color || '#8f8e86'}" stroke-dasharray="4 4" stroke-width="1.5"/><text x="${W-R-4}" y="${Y(r.y)-5}" fill="#c3c2b7" font-size="11" text-anchor="end">${esc(r.label)}</text>`; }
+  for (const s of series){ if (!s.points.length) continue; let d = '';
+    s.points.forEach((p, i) => { if (i === 0) d += `M${X(p[0])},${Y(p[1])}`; else if (step) d += `H${X(p[0])}V${Y(p[1])}`; else d += `L${X(p[0])},${Y(p[1])}`; });
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ''} stroke-linejoin="round"/>`; }
+  g += `<line class="xh" x1="0" x2="0" y1="${T}" y2="${H-B}" stroke="#c3c2b7" stroke-width="1" style="display:none"/>`;
+  const legend = series.length > 1 ? `<div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
+  CHARTS[id] = { series, X, Y, xMin, xMax, L, R, W, xFmt, yFmt };
+  return `${legend}<div class="chart" id="${id}" data-chart="${id}"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(yLabel)}">${g}<rect x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}" fill="transparent"/></svg><div class="tip"></div></div>`;
+}
+const CHARTS = {};
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest && e.target.closest('.chart'); document.querySelectorAll('.chart .tip').forEach(t => { if (!el || !el.contains(t)) t.style.display = 'none'; });
+  document.querySelectorAll('.chart .xh').forEach(x => { if (!el || !el.contains(x)) x.style.display = 'none'; });
+  if (!el) return; const c = CHARTS[el.dataset.chart]; if (!c) return;
+  const svg = el.querySelector('svg'); const r = svg.getBoundingClientRect(); const vx = (e.clientX - r.left)/r.width*c.W;
+  const xv = c.xMin + (vx - c.L)/(c.W - c.L - c.R)*(c.xMax - c.xMin); if (xv < c.xMin || xv > c.xMax) return;
+  const rows = c.series.map(s => { let best = null; for (const p of s.points){ if (p[0] <= xv + 1e-9) best = p; else break; } return best ? `<div><span style="color:${s.color}">■</span> ${esc(s.name)}: <b>${c.yFmt(best[1], true)}</b></div>` : ''; }).join('');
+  const tip = el.querySelector('.tip'); tip.innerHTML = `<div style="color:#8f8e86">${c.xFmt(xv, true)}</div>${rows}`; tip.style.display = 'block';
+  const px = (e.clientX - r.left); tip.style.left = Math.min(px + 12, r.width - tip.offsetWidth - 4) + 'px'; tip.style.top = '8px';
+  const xh = el.querySelector('.xh'); xh.setAttribute('x1', vx); xh.setAttribute('x2', vx); xh.style.display = '';
+});
+const gameClockFmt = (v, long) => { v = Math.round(v); if (v <= 1200) return long ? `1st ${fmtMS(1200 - v)}` : (v === 0 ? 'Start' : `1H ${fmtMS(1200 - v)}`); if (v <= 2400) return long ? `2nd ${fmtMS(2400 - v)}` : (v === 2400 ? 'End' : `2H ${fmtMS(2400 - v)}`); const o = Math.floor((v - 2400)/300) + 1; return `OT${o} ${fmtMS(300 - ((v - 2400) % 300))}`; };
+function fmtMS(s){ s = Math.max(0, Math.round(s)); return Math.floor(s/60) + ':' + String(s % 60).padStart(2, '0'); }
+
+/* =========================================================================
+   RENDER: SCOREBOARD
+   ========================================================================= */
+function confOf(t){ const c = S.conf.get(t.id); return c ? (c.abbr || c.name) : null; }
+function statusPill(g){
+  if (g.status === 'in') return `<span class="pill live">● ${esc(periodName(g.period))} ${esc(g.displayClock)}</span>`;
+  if (g.status === 'half') return `<span class="pill half">HALFTIME</span>`;
+  if (g.status === 'post') return `<span class="pill final">${esc(g.detail || 'Final')}</span>`;
+  if (g.status === 'other') return `<span class="pill">${esc(g.special || g.detail)}</span>`;
+  return `<span class="pill">${new Date(g.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
+}
+function teamRow(g, side){
+  const t = g[side], o = g[side === 'home' ? 'away' : 'home'];
+  const lose = g.status === 'post' && t.score != null && o.score != null && t.score < o.score;
+  const poss = g.possession && g.possession === t.id && g.status === 'in' ? '<span class="poss" title="Possession">◀</span>' : '';
+  return `<div class="trow ${lose ? 'lose' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy">` : '<span style="width:22px"></span>'}
+    <div class="nm">${t.rank ? `<span class="rk">${t.rank}</span>` : ''}${esc(t.short)}${t.record ? `<span class="rec">${esc(t.record)}</span>` : ''}${poss}</div>
+    <div class="sc num">${g.status === 'pre' || g.status === 'other' ? '' : (t.score ?? '')}</div></div>`;
+}
+function spreadText(g, ln){ if (!ln || ln.homeSpread == null) return NA; const fav = ln.homeSpread <= 0 ? g.home : g.away; return ln.homeSpread === 0 ? 'PK' : `${esc(fav.abbr || fav.short)} ${-Math.abs(ln.homeSpread)}`; }
+function coverText(g, ln){
+  if (!ln || (g.status !== 'in' && g.status !== 'half' && g.status !== 'post')) return '';
+  const h = g.home.score, a = g.away.score; if (h == null || a == null) return ''; const out = [];
+  if (ln.homeSpread != null){ const v = (h - a) + ln.homeSpread; out.push(v === 0 ? 'Spread: push right now' : `${esc((v > 0 ? g.home : g.away).abbr)} ${g.status === 'post' ? 'covered' : 'covering'} (${sgn(Math.abs(v), 1).replace('+', 'by ')})`); }
+  if (ln.total != null){ const tot = h + a; out.push(g.status === 'post' ? `Total ${tot} — ${tot > ln.total ? 'OVER' : tot < ln.total ? 'UNDER' : 'PUSH'} ${ln.total}` : `Total ${tot} vs ${ln.total} line`); }
+  return `<div class="cover">${out.join(' · ')}</div>`;
+}
+function card(g){
+  const p = S.proj.get(g.gid); const det = S.details.get(g.gid); const ln = currentLine(g);
+  const live = g.status === 'in' || g.status === 'half';
+  const projT = p && p.projT != null ? p.projT : p && p.pre ? p.pre.h + p.pre.a : null;
+  const disc = projT != null && ln && ln.total != null ? projT - ln.total : null;
+  const pace = p && p.obsPace && live ? p.obsPace : null;
+  const luckNet = p && p.luckH && p.luckA ? p.luckH.luck - p.luckA.luck : null;
+  const luckTxt = luckNet != null ? `<span class="model">${esc(luckNet >= 0 ? g.home.abbr : g.away.abbr)} ${sgn(Math.abs(luckNet), 1)}</span>` : (live ? '<span class="na">loading</span>' : '—');
+  const conf = confOf(g.home); const conf2 = confOf(g.away);
+  return `<div class="card ${live ? 'live' : ''}" data-gid="${g.gid}">
+    <div class="meta"><span>${statusPill(g)} ${g.broadcast ? esc(g.broadcast) : ''}</span><span>${esc(conf2 && conf && conf2 !== conf ? conf2 + ' / ' + conf : conf || '')}${g.neutral ? ' · N' : ''}</span></div>
+    ${teamRow(g, 'away')}${teamRow(g, 'home')}
+    <div class="kv">
+      <div><span>Spread${ln ? ' · ' + esc(shortBook(ln.book)) : ''}</span><b>${spreadText(g, ln)}</b></div>
+      <div><span>O/U</span><b>${ln && ln.total != null ? ln.total : NA}</b></div>
+      <div title="Model estimate"><span>${g.status === 'post' ? 'Pregame proj' : 'Proj total'}</span><b class="model">${projT != null ? projT.toFixed(1) : '—'}</b>${disc != null ? ` <small class="${Math.abs(disc) >= 4 ? 'warn' : ''}">(${sgn(disc)})</small>` : ''}</div>
+      <div><span>Pace /40</span><b>${pace != null ? pace.toFixed(1) : (p && p.pre && !p.pre.weak ? `<span class="model" title="Pregame expected pace">${p.pre.pace.toFixed(1)}</span>` : '—')}</b></div>
+      <div title="Model estimate"><span>Win% ${esc(g.home.abbr)}</span><b class="model">${p && p.pHome != null ? pct(p.pHome, 0) : '—'}</b></div>
+      <div title="Adjusted Luck Rating: which team's result is more inflated by shooting luck (model estimate)"><span>Luck edge</span><b>${luckTxt}</b></div>
+    </div>
+    ${coverText(g, ln)}
+    <div class="upd">Score ${tm(g.ts)}${det ? ' · Box ' + tm(det.ts) : ''}${ln ? ' · Odds ' + tm(ln.ts) : ' · No odds posted'}</div>
+  </div>`;
+}
+function shortBook(b){ return String(b || '').replace(/sportsbook/i, '').trim(); }
+
+function filtered(){
+  const f = S.filter; let arr = [...S.games.values()];
+  if (f.st !== 'all') arr = arr.filter(g => f.st === 'pre' ? (g.status === 'pre' || g.status === 'other') : g.status === f.st);
+  if (f.conf) arr = arr.filter(g => confOf(g.home) === f.conf || confOf(g.away) === f.conf);
+  if (f.ranked) arr = arr.filter(g => g.home.rank || g.away.rank);
+  if (f.q){ const q = f.q.toLowerCase(); arr = arr.filter(g => (g.home.name + ' ' + g.away.name + ' ' + g.home.abbr + ' ' + g.away.abbr).toLowerCase().includes(q)); }
+  const stRank = { in: 0, half: 1, pre: 2, other: 3, post: 4 };
+  const key = {
+    time: g => Date.parse(g.date), live: g => stRank[g.status]*1e13 + Date.parse(g.date),
+    pace: g => -((S.proj.get(g.gid)?.obsPace) ?? (S.proj.get(g.gid)?.pre?.pace ?? 0)),
+    disc: g => { const p = S.proj.get(g.gid), ln = currentLine(g); const t = p?.projT ?? (p?.pre ? p.pre.h + p.pre.a : null); return t != null && ln?.total != null ? -Math.abs(t - ln.total) : 1e9; },
+    move: g => { const ln = currentLine(g); if (!ln || !ln.open) return 1e9; const m = Math.abs((ln.total ?? 0) - (ln.open.total ?? ln.total ?? 0)) + Math.abs((ln.homeSpread ?? 0) - (ln.open.homeSpread ?? ln.homeSpread ?? 0)); return -m; },
+    conf: g => (confOf(g.home) || 'zzz') + Date.parse(g.date)
+  }[f.sort] || (g => 0);
+  return arr.sort((a, b) => { const x = key(a), y = key(b); return x < y ? -1 : x > y ? 1 : Date.parse(a.date) - Date.parse(b.date); });
+}
+
+function renderBoard(){
+  const m = document.getElementById('main');
+  if (S.view !== 'board') return;
+  const list = filtered();
+  const notice = [];
+  if (S.health.scoreboard.err && !S.health.scoreboard.ok) notice.push(`Could not reach the ESPN scoreboard feed (${esc(S.health.scoreboard.err)}). Nothing is shown rather than placeholder data. It will keep retrying.`);
+  else if (S.health.scoreboard.err && S.health.scoreboard.errAt > (S.health.scoreboard.ok || 0)) notice.push(`Latest scoreboard refresh failed (${esc(S.health.scoreboard.err)}) — showing data from ${tm(S.health.scoreboard.ok)}.`);
+  m.innerHTML = (notice.length ? `<div class="notice">${notice.join('<br>')}</div>` : '') +
+    (S.loading && !S.games.size ? '<div class="empty">Loading games…</div>' : list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<div class="empty">${S.games.size ? 'No games match these filters.' : 'No D1 games found for this date.'}</div>`);
+  renderStatus();
+}
+function renderStatus(){
+  const h = S.health; const live = [...S.games.values()].filter(g => g.status === 'in' || g.status === 'half').length;
+  const cnt = st => [...S.games.values()].filter(g => g.status === st).length;
+  const d = (o, label) => `<span><span class="dot ${o.err && (!o.ok || o.errAt > o.ok) ? 'err' : o.ok ? 'ok' : 'idle'}"></span>${label}: ${o.ok ? ago(o.ok) : o.err ? 'error' : 'idle'}${o.err && o.errAt > (o.ok || 0) ? ' (' + esc(o.err) + ')' : ''}</span>`;
+  document.getElementById('statusLine').innerHTML = `<span><b>${S.games.size}</b> games · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
+    d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Extra odds feed') : '<span>Extra odds feed: not configured</span>') +
+    `<span><span class="model">dotted</span> / <span class="tag">MODEL</span> = model estimate</span><span>Auto-refresh: ${anyLive() ? S.settings.refresh + 's (live)' : S.date === todayStr() ? '60s' : 'off (past/future date)'}</span>`;
+}
+function fillConfSelect(){
+  const sel = document.getElementById('confSel'); const cur = sel.value;
+  const set = new Set(); for (const g of S.games.values()){ const a = confOf(g.home), b = confOf(g.away); if (a) set.add(a); if (b) set.add(b); }
+  sel.innerHTML = '<option value="">All conferences</option>' + [...set].sort().map(c => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('');
+}
+function renderDays(){
+  const el = document.getElementById('days'); let h = '';
+  for (let i = -3; i <= 3; i++){ const d = addDays(S.date, i); const dt = new Date(d + 'T12:00:00');
+    h += `<div class="day ${i === 0 ? 'sel' : ''}" data-day="${d}">${dt.toLocaleDateString([], { weekday: 'short' })}<b>${dt.toLocaleDateString([], { month: 'short', day: 'numeric' })}</b></div>`; }
+  el.innerHTML = h; document.getElementById('datePick').value = S.date;
+}
+
+/* =========================================================================
+   RENDER: GAME DETAIL
+   ========================================================================= */
+const TABS = [['overview','Projection'],['box','Box score'],['team','Team stats'],['pace','Pace & possessions'],['luck','Adjusted luck'],['odds','Betting lines'],['timeline','Timeline & win prob']];
+async function openGame(gid){
+  S.open = gid; S.openTab = S.openTab || 'overview'; S.detailHist = null;
+  document.getElementById('overlay').classList.add('open'); document.body.style.overflow = 'hidden';
+  renderDetail();
+  const g = S.games.get(gid);
+  if (g){ await Promise.all([loadPrior(g.home.id), loadPrior(g.away.id), g.status !== 'pre' || !S.details.has(gid) ? fetchSummary(gid).catch(()=>{}) : null]); recompute(g); }
+  S.detailHist = { snaps: await DB.byGame('snaps', gid), odds: await DB.byGame('odds', gid) };
+  renderDetail();
+}
+function closeGame(){ S.open = null; document.getElementById('overlay').classList.remove('open'); document.body.style.overflow = ''; }
+function renderDetail(){
+  if (!S.open) return; const g = S.games.get(S.open); const P = document.getElementById('panel');
+  if (!g){ P.innerHTML = `<div class="phead"><button class="btn sm close" data-closegame>Close</button>Game not on the loaded date.</div>`; return; }
+  const scroll = P.scrollTop;
+  const big = t => g.status === 'pre' || g.status === 'other' ? '' : `<span class="big num">${t.score ?? ''}</span>`;
+  P.innerHTML = `<div class="phead"><button class="btn sm close" data-closegame>Close ✕</button>
+    <div class="scoreline">
+      <div class="tm">${g.away.logo ? `<img src="${esc(g.away.logo)}" alt="">` : ''}${g.away.rank ? `<small>#${g.away.rank}</small>` : ''} ${esc(g.away.name)} <small class="na" style="font-style:normal">${esc(g.away.record || '')}</small></div>${big(g.away)}
+      <span style="color:var(--text-muted)">@</span>${big(g.home)}
+      <div class="tm">${g.home.logo ? `<img src="${esc(g.home.logo)}" alt="">` : ''}${g.home.rank ? `<small>#${g.home.rank}</small>` : ''} ${esc(g.home.name)} <small class="na" style="font-style:normal">${esc(g.home.record || '')}</small></div>
+      <div>${statusPill(g)}</div>
+    </div>
+    <div class="note">${esc([new Date(g.date).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), g.venue, g.neutral ? 'Neutral site' : '', g.broadcast, g.notes].filter(Boolean).join(' · '))}</div>
+    <div class="ptabs">${TABS.map(([k, l]) => `<button class="btn sm ${S.openTab === k ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div></div>
+    <div class="pbody">${detailBody(g)}</div>`;
+  P.scrollTop = scroll;
+}
+function detailBody(g){
+  const det = S.details.get(g.gid);
+  try {
+    switch (S.openTab){
+      case 'box': return tabBox(g, det); case 'team': return tabTeam(g, det); case 'pace': return tabPace(g, det);
+      case 'luck': return tabLuck(g, det); case 'odds': return tabOdds(g, det); case 'timeline': return tabTimeline(g, det); default: return tabOverview(g, det);
+    }
+  } catch (e){ console.error(e); return `<div class="notice">Could not render this view: ${esc(e.message)}</div>`; }
+}
+function updatedLine(g, det){ const ln = currentLine(g); return `<div class="note">Scores updated ${tm(g.ts)} · Box score/PBP ${det ? tm(det.ts) : 'not loaded'} · Line ${ln ? `${esc(ln.book)} ${tm(ln.ts)}` : 'none posted'}</div>`; }
+
+function tabOverview(g, det){
+  const p = S.proj.get(g.gid); if (!p) return `<div class="section">Projection unavailable for this game status.</div>`;
+  const A = g.away.abbr, H = g.home.abbr;
+  if (p.final){
+    const h = g.home.score, a = g.away.score, ln = g.pregameLine || g.odds;
+    return `<div class="section"><h3>Final</h3><div class="tiles">
+      <div class="tile"><span>Final score</span><b>${esc(A)} ${a} – ${h} ${esc(H)}</b></div>
+      <div class="tile"><span>Total</span><b>${h + a}</b>${ln && ln.total != null ? `<em>Line ${ln.total} → ${h + a > ln.total ? 'OVER' : h + a < ln.total ? 'UNDER' : 'PUSH'}</em>` : ''}</div>
+      <div class="tile"><span>Pregame model total <span class="tag">MODEL</span></span><b>${f1(p.pre.h + p.pre.a)}</b><em>${esc(p.pre.src)}</em></div>
+    </div><div class="note">Open “Timeline & win prob” to review what this dashboard was projecting during the game (if it was open during the game).</div></div>`;
+  }
+  const ln = p.line; const live = g.status !== 'pre';
+  const favCover = ln && ln.homeSpread != null ? (ln.homeSpread <= 0 ? [H, p.pCoverH] : [A, 1 - p.pCoverH - (p.pPush || 0)]) : null;
+  let h = `<div class="section"><h3>Projected final <small>— ${p.n.toLocaleString()} Monte Carlo simulations of the remaining game · model estimate, not observed data</small></h3><div class="tiles">
+    <div class="tile"><span>Projected score <span class="tag">MODEL</span></span><b>${esc(A)} ${f1(p.projA)} – ${f1(p.projH)} ${esc(H)}</b></div>
+    <div class="tile"><span>Projected total <span class="tag">MODEL</span></span><b>${f1(p.projT)}</b><em>80% range ${p.t10}–${p.t90}</em></div>
+    <div class="tile"><span>Projected margin (${esc(H)}) <span class="tag">MODEL</span></span><b>${sgn(p.projM)}</b><em>80% range ${sgn(p.m10, 0)} to ${sgn(p.m90, 0)}</em></div>
+    <div class="tile"><span>Win probability <span class="tag">MODEL</span></span><b>${esc(H)} ${pct(p.pHome, 0)}</b><em>${esc(A)} ${pct(1 - p.pHome, 0)} · OT ${pct(p.pOT, 1)}</em></div>
+    <div class="tile"><span>Cover current spread <span class="tag">MODEL</span></span><b>${favCover ? `${esc(favCover[0])} ${pct(favCover[1], 0)}` : NA}</b><em>${ln && ln.homeSpread != null ? `${spreadText(g, ln)} · push ${pct(p.pPush, 1)}` : 'No spread posted'}</em></div>
+    <div class="tile"><span>Over current total <span class="tag">MODEL</span></span><b>${p.pOver != null ? pct(p.pOver, 0) : NA}</b><em>${ln && ln.total != null ? `Line ${ln.total} · under ${pct(1 - p.pOver - (p.pPushT || 0), 0)}` : 'No total posted'}</em></div>
+    <div class="tile"><span>Projected possessions <span class="tag">MODEL</span></span><b>${f1((p.projPossH + p.projPossA)/2)}</b><em>per team · ${esc(A)} ${f1(p.projPossA)} / ${esc(H)} ${f1(p.projPossH)}</em></div>
+    ${p.naiveT != null ? `<div class="tile"><span>Naive pace extrapolation</span><b>${f1(p.naiveT)}</b><em>Current points × 40 ÷ minutes played — for comparison only</em></div>` : ''}
+  </div></div>`;
+  h += `<div class="section"><h3>Model inputs</h3><table><tbody>
+    <tr><td>Pregame baseline</td><td>${esc(p.pre.src)}: ${esc(A)} ${f1(p.pre.a)} – ${f1(p.pre.h)} ${esc(H)}, ${f1(p.pre.pace)} poss</td></tr>
+    <tr><td>Pace used for remaining time</td><td>${f1(p.pace)} poss/40 per team${p.obsPace ? ` (observed ${f1(p.obsPace)}, blended toward pregame early in game)` : ''}</td></tr>
+    <tr><td>Points/possession used going forward</td><td>${esc(A)} ${f1(p.aPPP, 3)} · ${esc(H)} ${f1(p.hPPP, 3)} — blend of pregame expectation and luck-adjusted in-game efficiency</td></tr>
+    <tr><td>Possessions so far</td><td>${live ? `${esc(A)} ${f1(p.possA, 0)} · ${esc(H)} ${f1(p.possH, 0)} (${esc(p.possSource || '')})` : '—'}</td></tr>
+    <tr><td>Team history</td><td>${esc(A)}: ${esc(S.priors.get(g.away.id)?.src || 'unavailable')} · ${esc(H)}: ${esc(S.priors.get(g.home.id)?.src || 'unavailable')}</td></tr>
+    ${p.fouls ? `<tr><td>Team fouls this half</td><td>${esc(A)} ${p.fouls.a} · ${esc(H)} ${p.fouls.h} (from play-by-play; 7 = bonus, 10 = double bonus)</td></tr>` : ''}
+    ${p.foulTrouble && (p.foulTrouble.h.length || p.foulTrouble.a.length) ? `<tr><td>Starters in foul trouble</td><td>${esc([...p.foulTrouble.a.map(x => A + ': ' + x), ...p.foulTrouble.h.map(x => H + ': ' + x)].join(', '))}</td></tr>` : ''}
+    ${det && det.predictor && (det.predictor.h != null) ? `<tr><td>ESPN BPI pregame (reference)</td><td>${esc(H)} ${f1(det.predictor.h)}% to win</td></tr>` : ''}
+    ${det && det.injuries && det.injuries.some(i => i.list.length) ? `<tr><td>Reported availability</td><td style="white-space:normal">${esc(det.injuries.filter(i => i.list.length).map(i => (i.team === g.home.id ? H : A) + ': ' + i.list.join(', ')).join(' · '))}</td></tr>` : ''}
+  </tbody></table>
+  <div class="note">The simulation plays out every remaining possession with points-per-possession outcomes, late-game intentional fouling (trailing team fouls inside 1:00), clock-killing when ahead, three-point hunting when behind, bonus situations and overtime. Rotation/availability is not modeled because no reliable live lineup feed is available; reported injuries are shown for context only.</div>
+  ${updatedLine(g, det)}</div>`;
+  return h;
+}
+
+function boxTable(p, label){
+  if (!p) return `<div class="section"><h3>${esc(label)}</h3>${NA} — player box score not provided yet.</div>`;
+  const cols = ['MIN','PTS','REB','OREB','DREB','AST','STL','BLK','TO','PF','FG','FG%','3PT','3P%','FT','FT%'];
+  const hasPM = p.names.includes('+/-');
+  if (hasPM) cols.push('+/-');
+  const pctOf = s => { if (!s || !String(s).includes('-')) return null; const [m, a] = String(s).split('-').map(Number); return a ? m/a : null; };
+  const cell = (v, c) => c === 'FG%' ? pct(pctOf(v.FG), 0) : c === '3P%' ? pct(pctOf(v['3PT']), 0) : c === 'FT%' ? pct(pctOf(v.FT), 0) : (v[c] ?? NA);
+  const rows = [...p.rows].sort((a, b) => (b.starter - a.starter) || ((num(b.v.MIN) || 0) - (num(a.v.MIN) || 0)));
+  return `<div class="section"><h3>${esc(label)}</h3><div class="tw"><table><thead><tr><th>Player</th>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>
+    ${rows.map(r => r.dnp ? `<tr class="dnp"><td>${esc(r.name)} <small>${esc(r.pos)}</small></td><td colspan="${cols.length}" style="text-align:left">DNP${r.reason ? ' — ' + esc(r.reason) : ''}</td></tr>`
+      : `<tr><td>${esc(r.name)} <small style="color:var(--text-muted)">${esc(r.pos)}${r.starter ? ' · S' : ''}</small></td>${cols.map(c => `<td class="num">${cell(r.v, c)}</td>`).join('')}</tr>`).join('')}
+    ${p.totals ? `<tr class="tot"><td>Totals</td>${cols.map(c => `<td class="num">${c === 'MIN' ? '' : cell(p.totals, c)}</td>`).join('')}</tr>` : ''}
+  </tbody></table></div>${hasPM ? '' : '<div class="note">Plus/minus is not provided by ESPN for this game.</div>'}</div>`;
+}
+function tabBox(g, det){
+  if (!det) return `<div class="section">Box score loading…</div>`;
+  if (!det.pA && !det.pH) return `<div class="section">No box score has been published for this game yet.</div>`;
+  return boxTable(det.pA, g.away.name) + boxTable(det.pH, g.home.name) + updatedLine(g, det);
+}
+function tabTeam(g, det){
+  if (!det || !det.hasBox) return `<div class="section">Team statistics are not available yet${g.status === 'pre' ? ' (game has not started)' : ''}.</div>`;
+  const a = det.totA, h = det.totH; const pa = estPoss(a), ph = estPoss(h);
+  const ap = det.poss ? det.poss.a : pa, hp = det.poss ? det.poss.h : ph;
+  const A = advanced(a, h, g.away.score, g.home.score, ap), H = advanced(h, a, g.home.score, g.away.score, hp);
+  const row = (l, x, y, better = 1) => { const cx = typeof x === 'number' && typeof y === 'number' && x !== y ? ((x > y) === (better > 0) ? 'good' : '') : ''; const cy = typeof x === 'number' && typeof y === 'number' && x !== y ? ((y > x) === (better > 0) ? 'good' : '') : '';
+    return `<tr><td>${l}</td><td class="num ${cx}">${typeof x === 'number' ? (Number.isInteger(x) ? x : x.toFixed(1)) : (x ?? NA)}</td><td class="num ${cy}">${typeof y === 'number' ? (Number.isInteger(y) ? y : y.toFixed(1)) : (y ?? NA)}</td></tr>`; };
+  const pr = (l, x, y, b = 1) => `<tr><td>${l}</td><td class="num">${pct(x)}</td><td class="num">${pct(y)}</td></tr>`;
+  const mk = (m, att) => m == null ? NA : `${m}-${att}`;
+  const halves = side => { const L = g[side].lines; return { h1: L[0] ?? null, h2: L[1] ?? null, ot: L.length > 2 ? L.slice(2).reduce((x, y) => x + (y || 0), 0) : null }; };
+  const HA = halves('away'), HH = halves('home');
+  return `<div class="two"><div class="section"><h3>Team comparison</h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${row('FG', mk(a.fgm, a.fga), mk(h.fgm, h.fga))}${pr('FG%', A.fgp, H.fgp)}${row('3PT', mk(a.tpm, a.tpa), mk(h.tpm, h.tpa))}${pr('3P%', A.tpp, H.tpp)}${row('FT', mk(a.ftm, a.fta), mk(h.ftm, h.fta))}${pr('FT%', A.ftp, H.ftp)}
+    ${row('Rebounds', a.trb, h.trb)}${row('Offensive reb', a.orb, h.orb)}${row('Defensive reb', a.drb, h.drb)}${row('Assists', a.ast, h.ast)}${row('Steals', a.stl, h.stl)}${row('Blocks', a.blk, h.blk)}
+    ${row('Turnovers', a.to, h.to, -1)}${row('Fouls', a.pf, h.pf, -1)}${row('Points in paint', a.paint, h.paint)}${row('Fast-break points', a.fastbreak, h.fastbreak)}${row('Second-chance points', a.second, h.second)}${row('Points off turnovers', a.toPts, h.toPts)}${row('Largest lead', a.lead, h.lead)}
+  </tbody></table></div>
+  <div><div class="section"><h3>Scoring by half</h3><table><thead><tr><th></th><th>1st</th><th>2nd</th><th>OT</th><th>Total</th></tr></thead><tbody>
+    <tr><td>${esc(g.away.abbr)}</td><td class="num">${HA.h1 ?? NA}</td><td class="num">${HA.h2 ?? '—'}</td><td class="num">${HA.ot ?? '—'}</td><td class="num"><b>${g.away.score ?? NA}</b></td></tr>
+    <tr><td>${esc(g.home.abbr)}</td><td class="num">${HH.h1 ?? NA}</td><td class="num">${HH.h2 ?? '—'}</td><td class="num">${HH.ot ?? '—'}</td><td class="num"><b>${g.home.score ?? NA}</b></td></tr>
+  </tbody></table></div>
+  <div class="section"><h3>Four Factors <small>observed this game</small></h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${pr('Effective FG% (eFG%)', A.efg, H.efg)}${pr('Turnover rate (TO / poss)', A.tov, H.tov)}${pr('Offensive rebound rate', A.orbPct, H.orbPct)}${pr('Free-throw rate (FTA / FGA)', A.ftr, H.ftr)}
+  </tbody></table><div class="note">Possessions for rates: ${det.poss ? 'counted from play-by-play' : 'estimated (FGA − ORB + TO + 0.475×FTA)'}.</div></div></div></div>${updatedLine(g, det)}`;
+}
+function tabPace(g, det){
+  if (!det || !det.hasBox) return `<div class="section">Pace and possession data appear once the game tips off and a box score is published.</div>` + (S.proj.get(g.gid)?.pre ? `<div class="section"><h3>Pregame expectation <span class="tag">MODEL</span></h3>${f1(S.proj.get(g.gid).pre.pace)} possessions per team (${esc(S.proj.get(g.gid).pre.src)})</div>` : '');
+  const p = S.proj.get(g.gid) || {}; const el = gameElapsed(g); const mins = el/60;
+  const a = det.totA, h = det.totH; const eA = estPoss(a), eH = estPoss(h); const cA = det.poss?.a, cH = det.poss?.h;
+  const uA = cA ?? eA, uH = cH ?? eH;
+  const A = advanced(a, h, g.away.score, g.home.score, uA), H = advanced(h, a, g.home.score, g.away.score, uH);
+  const per40 = v => v != null && mins > 0 ? v/mins*40 : null;
+  const sA = S.priors.get(g.away.id), sH = S.priors.get(g.home.id);
+  const gp = uA != null && uH != null ? (uA + uH)/2 : null;
+  const r = (l, x, y, fx = f1) => `<tr><td>${l}</td><td class="num">${fx(x)}</td><td class="num">${fx(y)}</td></tr>`;
+  let h1 = `<div class="two"><div class="section"><h3>Possessions & pace</h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${r('Estimated possessions (FGA − ORB + TO + 0.475·FTA)', eA, eH)}
+    ${r('Counted possessions (play-by-play)', cA ?? null, cH ?? null, v => v == null ? `<span class="na">not available</span>` : v)}
+    ${r('Possessions per 40 (current pace)', per40(uA), per40(uH))}
+    ${r('Season avg pace (team history)', sA?.pace, sH?.pace)}
+    ${r('Current vs season pace', per40(uA) != null && sA?.pace ? per40(uA) - sA.pace : null, per40(uH) != null && sH?.pace ? per40(uH) - sH.pace : null, sgn)}
+  </tbody></table>
+  <div class="note">Combined game possessions: <b>${f1(gp)}</b> per team (${f1(uA != null && uH != null ? uA + uH : null)} total) through ${f1(mins)} min. Counted possessions start each time the ball changes hands on a shot, free throw or turnover; they can differ from the formula estimate by a few.</div></div>
+  <div class="section"><h3>Efficiency</h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${r('Offensive efficiency (pts/100 poss)', A.ortg, H.ortg)}${r('Defensive efficiency (allowed/100)', A.drtg, H.drtg)}${r('Points per possession', A.ppp, H.ppp, v => f1(v, 3))}
+    ${r('Season ORtg (history)', sA?.ortg, sH?.ortg)}${r('Season DRtg (history)', sA?.drtg, sH?.drtg)}
+    ${r('Effective FG%', A.efg, H.efg, pct)}${r('True shooting %', A.ts, H.ts, pct)}${r('Turnover %', A.tov, H.tov, pct)}${r('Offensive rebound %', A.orbPct, H.orbPct, pct)}
+  </tbody></table></div></div>`;
+  // Live pace projection
+  if (p.projPossH != null && g.status !== 'post'){
+    h1 += `<div class="section"><h3>Live pace projection <span class="tag">MODEL</span></h3><div class="tiles">
+      <div class="tile"><span>${esc(g.away.abbr)} projected possessions</span><b>${f1(p.projPossA)}</b></div>
+      <div class="tile"><span>${esc(g.home.abbr)} projected possessions</span><b>${f1(p.projPossH)}</b></div>
+      <div class="tile"><span>Pace used for remaining time</span><b>${f1(p.pace)}</b><em>pregame ${f1(p.pre?.pace)} · observed ${f1(p.obsPace)}</em></div>
+    </div><div class="note">Blends current pace with the pregame expectation (season pace of both teams), weighting current pace more as the game goes on; includes end-of-game fouling and overtime chances.</div></div>`;
+  }
+  if (det.poss && det.poss.series.length > 2){
+    const sr = det.poss.series; const xMax = Math.max(2400, el);
+    const series = [{ name: g.away.abbr + ' possessions', color: 'var(--away)', points: sr.map(s => [s.el, s.a]) }, { name: g.home.abbr + ' possessions', color: 'var(--home)', points: sr.map(s => [s.el, s.h]) }];
+    if (p.pre) series.push({ name: 'Pregame expected pace', color: '#8f8e86', dash: true, points: [[0, 0], [2400, p.pre.pace]] });
+    if (p.projPossH != null && g.status !== 'post') series.push({ name: 'Projected finish', color: '#c3c2b7', dash: true, points: [[el, (uA + uH)/2], [Math.max(2400, el), (p.projPossA + p.projPossH)/2]] });
+    h1 += `<div class="section"><h3>Possessions through the game</h3>${lineChart({ series, xMax, xFmt: gameClockFmt, yFmt: v => Math.round(v), yLabel: 'Cumulative possessions', step: false })}</div>`;
+  }
+  return h1 + updatedLine(g, det);
+}
+function tabLuck(g, det){
+  if (!det || !det.hasBox) return `<div class="section">Adjusted luck appears once the game has a box score.</div>`;
+  const sA = S.priors.get(g.away.id), sH = S.priors.get(g.home.id);
+  const LA = luckFor(det.totA, sA), LH = luckFor(det.totH, sH); if (!LA || !LH) return `<div class="section">${NA} — not enough shooting data yet.</div>`;
+  const possA = det.poss?.a ?? estPoss(det.totA), possH = det.poss?.h ?? estPoss(det.totH);
+  const net = (own, opp) => own.luck - opp.luck; const netSd = (x, y) => Math.sqrt(x.sd**2 + y.sd**2);
+  const rate = (own, opp, ps) => ps ? net(own, opp)/ps*100 : null;
+  const tile = (t, own, opp, ps) => { const z = netSd(own, opp) ? net(own, opp)/netSd(own, opp) : 0;
+    return `<div class="tile"><span>${esc(t)} Adjusted Luck Rating <span class="tag">MODEL</span></span><b class="${z > 1 ? 'warn' : z < -1 ? 'warn' : ''}">${sgn(net(own, opp))} pts</b><em>${luckLabel(z)} (z ${sgn(z, 2)}) · ${sgn(rate(own, opp, ps))} per 100 poss</em></div>`; };
+  const SQA = shotQuality(det.plays, g.away.id), SQH = shotQuality(det.plays, g.home.id);
+  const r = (l, x, y, fx) => `<tr><td>${l}</td><td class="num">${fx(x)}</td><td class="num">${fx(y)}</td></tr>`;
+  const ptsA = g.away.score || 0, ptsH = g.home.score || 0;
+  const expA = ptsA - LA.raw, expH = ptsH - LH.raw;
+  return `<div class="section"><h3>Adjusted Luck Rating <small>— positive = the team's result is better than its shot-making expectation (own shooting luck minus opponent shooting luck)</small></h3><div class="tiles">
+    ${tile(g.away.abbr, LA, LH, possA)}${tile(g.home.abbr, LH, LA, possH)}
+    <div class="tile"><span>Actual margin (${esc(g.home.abbr)})</span><b>${sgn(ptsH - ptsA, 0)}</b><em>observed</em></div>
+    <div class="tile"><span>Luck-adjusted margin <span class="tag">MODEL</span></span><b>${sgn((ptsH - ptsA) - (net(LH, LA)), 1)}</b><em>regresses only the luck share of shooting</em></div>
+  </div></div>
+  <div class="two"><div class="section"><h3>Observed vs expected shooting</h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${r('3P% — actual', LA.act3, LH.act3, pct)}${r('3P% — expected <span class="tag">MODEL</span>', LA.exp3, LH.exp3, pct)}${r('3P points vs expected', LA.d3, LH.d3, sgn)}
+    ${r('2P% — actual', LA.act2, LH.act2, pct)}${r('2P% — expected <span class="tag">MODEL</span>', LA.exp2, LH.exp2, pct)}${r('2P points vs expected', LA.d2, LH.d2, sgn)}
+    ${r('FT% — actual', LA.actFt, LH.actFt, pct)}${r('FT% — expected <span class="tag">MODEL</span>', LA.expFt, LH.expFt, pct)}${r('FT points vs expected', LA.dF, LH.dF, sgn)}
+    ${r('Opponent 3P points vs expected (defense)', LH.d3, LA.d3, sgn)}${r('Opponent FT points vs expected', LH.dF, LA.dF, sgn)}
+  </tbody></table></div>
+  <div class="section"><h3>Expected scoring</h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${r('Actual points', ptsA, ptsH, v => v)}${r('Expected points (team shooting history) <span class="tag">MODEL</span>', expA, expH, f1)}
+    ${r('Actual points per possession', possA ? ptsA/possA : null, possH ? ptsH/possH : null, v => f1(v, 3))}${r('Expected PPP <span class="tag">MODEL</span>', possA ? expA/possA : null, possH ? expH/possH : null, v => f1(v, 3))}
+    ${r('Luck portion (counted as luck) <span class="tag">MODEL</span>', LA.luck, LH.luck, sgn)}${r('Uncertainty (1 SD of luck)', LA.sd, LH.sd, f1)}
+    ${r('Shot-type expected FG points <span class="tag">MODEL</span>', SQA?.xPts ?? null, SQH?.xPts ?? null, f1)}${r('Actual FG points (from play-by-play)', SQA?.actual ?? null, SQH?.actual ?? null, v => v ?? NA)}
+  </tbody></table></div></div>
+  <div class="section"><h3>How this is calculated</h3><div class="note" style="font-size:12.5px;color:var(--text-secondary)">
+    • Expected percentages use each team's shooting history (${esc(sA?.src || 'no history found')} / ${esc(sH?.src || 'no history found')}), shrunk toward D1 averages (3P ${pct(LEAGUE.tp)}, 2P ${pct(LEAGUE.twop)}, FT ${pct(LEAGUE.ft)}) in proportion to how many attempts the history contains.<br>
+    • Not all over-performance is luck: only ${LUCK_SHARE.three*100}% of a 3-point deviation, ${LUCK_SHARE.ft*100}% of a free-throw deviation and ${LUCK_SHARE.two*100}% of a 2-point deviation is labeled luck; the rest is treated as real (shot quality, matchup, form).<br>
+    • z-scores divide the luck by its binomial standard deviation, so small samples (early in games) rarely look extreme. |z| &lt; 1 is normal noise.<br>
+    • Shot-type expected points use league-average make rates by shot type (dunk, layup, tip, jumper, three) from play-by-play text; ESPN does not supply defender distance or shot-clock data, so this is a rough shot-quality check.<br>
+    • Opponent defensive strength is reflected through the pregame ratings in the projection, not in the luck expectation.
+  </div></div>${updatedLine(g, det)}`;
+}
+function tabOdds(g, det){
+  const books = []; if (det && det.pick && det.pick.length) books.push(...det.pick); else if (g.odds) books.push(g.odds);
+  books.push(...(S.extraOdds.get(g.gid) || []));
+  const p = S.proj.get(g.gid);
+  if (!books.length) return `<div class="section"><h3>Betting lines</h3>No lines have been posted for this game in the available feeds. ${S.settings.proxy ? '' : 'Add your FanDuel/DraftKings feed in Settings to check another source.'}</div>`;
+  const rows = books.map(o => { const [ih, ia] = devig(o.mlH, o.mlA);
+    return `<tr><td>${esc(o.book)}${o.src === 'espn' ? ' <small class="na" style="font-style:normal">via ESPN</small>' : ''}</td>
+      <td class="num">${o.open?.homeSpread != null ? line(o.open.homeSpread) : NA}</td><td class="num"><b>${line(o.homeSpread)}</b> <small>${o.spOddsH != null ? '(' + odds(o.spOddsH) + ')' : ''}</small></td>
+      <td class="num">${o.open?.total ?? NA}</td><td class="num"><b>${o.total ?? NA}</b> <small>${o.overOdds != null ? '(' + odds(o.overOdds) + '/' + odds(o.underOdds) + ')' : ''}</small></td>
+      <td class="num">${odds(o.mlA)} / ${odds(o.mlH)}</td><td class="num">${ia != null ? pct(ia, 1) + ' / ' + pct(ih, 1) : NA}</td><td>${tm(o.ts)}</td></tr>`; }).join('');
+  let h = `<div class="section"><h3>Lines <small>— spread shown for ${esc(g.home.abbr)} (home); moneyline and implied win % shown ${esc(g.away.abbr)} / ${esc(g.home.abbr)}, no-vig</small></h3><div class="tw"><table><thead><tr><th>Book</th><th>Open spread</th><th>Current spread</th><th>Open total</th><th>Current total</th><th>Moneyline</th><th>Implied win %</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="note">“Current” is the latest value in the feed when it was last pulled. ESPN publishes DraftKings odds; whether ESPN's number is a live in-game line or the pregame close depends on what ESPN carries for that game. “Open” comes from the feed when supplied; otherwise see the movement chart, which starts from the first value this dashboard saw.</div></div>`;
+  const ln = currentLine(g);
+  if (ln && g.home.score != null && g.status !== 'pre'){
+    const mar = g.home.score - g.away.score, tot = g.home.score + g.away.score;
+    h += `<div class="section"><h3>Score vs the number</h3><div class="tiles">
+      <div class="tile"><span>Spread status</span><b>${ln.homeSpread != null ? ((mar + ln.homeSpread) > 0 ? esc(g.home.abbr) : (mar + ln.homeSpread) < 0 ? esc(g.away.abbr) : 'Push') : NA}</b><em>${ln.homeSpread != null ? `${esc(g.home.abbr)} ${sgn(mar, 0)} with line ${line(ln.homeSpread)} → ${sgn(mar + ln.homeSpread)}` : ''}</em></div>
+      <div class="tile"><span>Total status</span><b>${ln.total != null ? `${tot} vs ${ln.total}` : NA}</b><em>${ln.total != null ? (g.status === 'post' ? (tot > ln.total ? 'Went OVER' : tot < ln.total ? 'Went UNDER' : 'Push') : `${f1(ln.total - tot)} more points needed for the over`) : ''}</em></div>
+      ${p && p.pOver != null ? `<div class="tile"><span>Model: over ${ln.total} <span class="tag">MODEL</span></span><b>${pct(p.pOver, 0)}</b><em>projected total ${f1(p.projT)}</em></div>` : ''}
+      ${p && p.pCoverH != null ? `<div class="tile"><span>Model: ${esc(g.home.abbr)} covers <span class="tag">MODEL</span></span><b>${pct(p.pCoverH, 0)}</b><em>projected margin ${sgn(p.projM)}</em></div>` : ''}
+    </div></div>`;
+  }
+  const hist = (S.detailHist && S.detailHist.odds) || [];
+  if (hist.length > 1){
+    const bySrc = {}; for (const o of hist){ (bySrc[o.src] = bySrc[o.src] || []).push(o); }
+    const col = ['var(--away)', 'var(--home)', '#1baf7a', '#9085e9'];
+    const keys = Object.keys(bySrc).slice(0, 4);
+    const t0 = Math.min(...hist.map(o => o.ts)), t1 = Math.max(Date.now(), ...hist.map(o => o.ts));
+    const tf = v => new Date(v).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const sTot = keys.map((k, i) => ({ name: k.split('|')[1] + ' total', color: col[i], points: bySrc[k].filter(o => o.total != null).map(o => [o.ts, o.total]).concat(bySrc[k].length ? [[t1, bySrc[k][bySrc[k].length-1].total]] : []).filter(x => x[1] != null) }));
+    const sSp = keys.map((k, i) => ({ name: k.split('|')[1] + ' spread (' + g.home.abbr + ')', color: col[i], points: bySrc[k].filter(o => o.homeSpread != null).map(o => [o.ts, o.homeSpread]).concat(bySrc[k].length ? [[t1, bySrc[k][bySrc[k].length-1].homeSpread]] : []).filter(x => x[1] != null) }));
+    h += `<div class="two"><div class="section"><h3>Total movement <small>(recorded by this dashboard)</small></h3>${lineChart({ series: sTot, xMin: t0, xMax: t1, xFmt: tf, yFmt: (v, l) => l ? v : v.toFixed(1), step: true, h: 200 })}</div>
+      <div class="section"><h3>Spread movement <small>(recorded by this dashboard)</small></h3>${lineChart({ series: sSp, xMin: t0, xMax: t1, xFmt: tf, yFmt: (v, l) => l ? line(v) : v.toFixed(1), step: true, h: 200 })}</div></div>`;
+  } else h += `<div class="note">Line-movement history builds up while this dashboard is open (a snapshot is saved each time a line changes).</div>`;
+  return h;
+}
+function tabTimeline(g, det){
+  let h = '';
+  const snaps = (S.detailHist && S.detailHist.snaps) || [];
+  if (det && det.plays && det.plays.length){
+    const pts = det.plays.filter(p => p.h != null && p.a != null).map(p => [p.el, p.h - p.a]);
+    const xMax = Math.max(2400, ...pts.map(p => p[0]));
+    h += `<div class="section"><h3>Scoring margin <small>(${esc(g.home.abbr)} minus ${esc(g.away.abbr)}, from play-by-play)</small></h3>${lineChart({ series: [{ name: 'Margin', color: 'var(--home)', points: [[0, 0], ...pts] }], xMax, xFmt: gameClockFmt, yFmt: (v, l) => l ? sgn(v, 0) : Math.round(v), refs: [{ y: 0, label: 'Tied' }], step: true })}</div>`;
+    const wpSeries = [];
+    if (det.wp && det.wp.length > 5){ const idx = new Map(det.plays.map(p => [String(p.id), p.el])); const pp = det.wp.map(w => [idx.get(String(w.pid)), w.hw]).filter(x => x[0] != null).sort((a, b) => a[0] - b[0]); if (pp.length) wpSeries.push({ name: 'ESPN win prob (reference)', color: '#8f8e86', points: pp }); }
+    const ours = snaps.filter(s => s.pHome != null).map(s => [s.el, s.pHome]);
+    if (ours.length) wpSeries.push({ name: 'Hoops Lab model', color: 'var(--home)', points: ours });
+    if (wpSeries.length) h += `<div class="section"><h3>${esc(g.home.abbr)} win probability</h3>${lineChart({ series: wpSeries, xMax, yMin: 0, yMax: 1, xFmt: gameClockFmt, yFmt: v => Math.round(v*100) + '%', refs: [{ y: 0.5, label: '50%' }] })}</div>`;
+    else h += `<div class="section"><h3>Win probability</h3><div class="note">No win-probability history yet. This dashboard saves its projection about once a minute while a game is live and the page is open.</div></div>`;
+  } else h += `<div class="section">Play-by-play not available yet.</div>`;
+  if (snaps.length > 1){
+    const tots = snaps.filter(s => s.projT != null);
+    const series = [{ name: 'Projected total', color: 'var(--away)', points: tots.map(s => [s.el, s.projT]) }];
+    const nv = tots.filter(s => s.naiveT != null); if (nv.length) series.push({ name: 'Naive pace extrapolation', color: '#8f8e86', dash: true, points: nv.map(s => [s.el, s.naiveT]) });
+    const lt = tots.filter(s => s.lineTotal != null); if (lt.length) series.push({ name: 'Sportsbook total', color: '#c98500', points: lt.map(s => [s.el, s.lineTotal]) });
+    const refs = g.status === 'post' ? [{ y: g.home.score + g.away.score, label: 'Actual ' + (g.home.score + g.away.score), color: '#3fb873' }] : [];
+    h += `<div class="section"><h3>What the dashboard projected during the game</h3>${lineChart({ series, xMax: Math.max(2400, ...tots.map(s => s.el)), xFmt: gameClockFmt, yFmt: (v, l) => l ? v.toFixed(1) : Math.round(v), refs })}<div class="note">${snaps.length} saved projections.</div></div>`;
+  }
+  if (det && det.plays && det.plays.length){
+    const recent = det.plays.slice(-60).reverse();
+    h += `<div class="section"><h3>Recent plays</h3><div class="plays">${recent.map(p => `<div><span class="t">${esc(periodName(p.period))} ${esc(p.clock)}</span><span style="flex:1">${p.scoring ? '<b>' : ''}${esc(p.text)}${p.scoring ? '</b>' : ''}</span><span class="num">${p.a ?? ''}-${p.h ?? ''}</span></div>`).join('')}</div></div>`;
+  }
+  return h + updatedLine(g, det);
+}
+
+/* =========================================================================
+   RENDER: MODEL PERFORMANCE
+   ========================================================================= */
+async function renderPerf(){
+  const m = document.getElementById('main');
+  m.innerHTML = '<div class="empty">Loading stored history…</div>';
+  const [games, snaps] = await Promise.all([DB.all('games'), DB.all('snaps')]);
+  const byG = {}; for (const s of snaps) (byG[s.gid] = byG[s.gid] || []).push(s);
+  const finals = games.filter(g => g.status === 'post' && g.h != null && g.a != null && byG[g.gid]);
+  const cps = [['Pregame', 0], ['Halftime', 1200], ['10:00 left', 1800], ['5:00 left', 2100], ['2:00 left', 2280]];
+  const pickAt = (arr, el) => { let best = null; for (const s of arr) { if (s.el <= el + 1 && (!best || s.el >= best.el)) best = s; } return best; };
+  const rows = []; // per game per checkpoint
+  for (const g of finals){ const arr = byG[g.gid].sort((a, b) => a.ts - b.ts);
+    for (const [name, el] of cps){ const s = el === 0 ? arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null) : pickAt(arr.filter(x => x.status !== 'pre'), el);
+      if (!s || (el > 0 && s.el < el - 240)) continue; const T = g.h + g.a, M = g.h - g.a;
+      rows.push({ gid: g.gid, cp: name, conf: g.conf || '—', errT: s.projT - T, errM: s.projM - M, pHome: s.pHome, won: M > 0 ? 1 : 0, naiveErr: s.naiveT != null ? s.naiveT - T : null,
+        possErr: s.projPoss != null && g.finalPoss != null ? s.projPoss - g.finalPoss : null, lineErr: s.lineTotal != null ? s.lineTotal - T : null, close: Math.abs((s.h ?? 0) - (s.a ?? 0)) <= 6 }); } }
+  const mae = a => a.length ? mean(a.map(Math.abs)) : null;
+  const brier = a => a.length ? mean(a.map(r => (r.pHome - r.won)**2)) : null;
+  const tbl = cps.map(([n]) => { const r = rows.filter(x => x.cp === n); return `<tr><td>${n}</td><td class="num">${r.length}</td><td class="num">${f1(mae(r.map(x => x.errT)))}</td><td class="num">${f1(mae(r.filter(x => x.lineErr != null).map(x => x.lineErr)))}</td><td class="num">${f1(mae(r.filter(x => x.naiveErr != null).map(x => x.naiveErr)))}</td><td class="num">${f1(mae(r.map(x => x.errM)))}</td><td class="num">${f1(mae(r.filter(x => x.possErr != null).map(x => x.possErr)))}</td><td class="num">${f1(brier(r), 3)}</td><td class="num">${sgn(mean(r.map(x => x.errT)))}</td></tr>`; }).join('');
+  // calibration (all in-game checkpoints)
+  const bins = Array.from({ length: 10 }, (_, i) => ({ lo: i/10, n: 0, p: 0, w: 0 }));
+  for (const r of rows){ const b = bins[Math.min(9, Math.floor(r.pHome*10))]; b.n++; b.p += r.pHome; b.w += r.won; }
+  const calPts = bins.filter(b => b.n).map(b => [b.p/b.n, b.w/b.n]);
+  const calChart = calPts.length ? lineChart({ series: [{ name: 'Observed win rate', color: 'var(--away)', points: calPts }, { name: 'Perfect calibration', color: '#8f8e86', dash: true, points: [[0, 0], [1, 1]] }], xMin: 0, xMax: 1, yMin: 0, yMax: 1, xFmt: v => Math.round(v*100) + '%', yFmt: v => Math.round(v*100) + '%', h: 240 }) : '';
+  const byConf = {}; for (const r of rows.filter(x => x.cp === 'Halftime')) (byConf[r.conf] = byConf[r.conf] || []).push(r);
+  const confRows = Object.entries(byConf).sort((a, b) => b[1].length - a[1].length).map(([c, r]) => `<tr><td>${esc(c)}</td><td class="num">${r.length}</td><td class="num">${f1(mae(r.map(x => x.errT)))}</td><td class="num">${f1(mae(r.map(x => x.errM)))}</td><td class="num">${f1(brier(r), 3)}</td></tr>`).join('');
+  const sit = [['Close at checkpoint (≤6)', rows.filter(r => r.cp !== 'Pregame' && r.close)], ['Not close (>6)', rows.filter(r => r.cp !== 'Pregame' && !r.close)]].map(([n, r]) => `<tr><td>${n}</td><td class="num">${r.length}</td><td class="num">${f1(mae(r.map(x => x.errT)))}</td><td class="num">${f1(mae(r.map(x => x.errM)))}</td><td class="num">${f1(brier(r), 3)}</td></tr>`).join('');
+  const half = rows.filter(r => r.cp === 'Halftime');
+  const lucky = half.filter(r => r.naiveErr != null);
+  const list = finals.sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 200).map(g => `<tr class="gl" data-hist="${g.gid}" data-day="${g.day || ''}" style="cursor:pointer"><td>${esc(g.day || '')}</td><td style="text-align:left">${esc(g.away)} ${g.a} @ ${esc(g.home)} ${g.h}</td><td style="text-align:left">${esc(g.conf || '')}</td><td class="num">${byG[g.gid].length}</td><td class="num">${g.pregameLine?.total ?? NA}</td></tr>`).join('');
+  m.innerHTML = `<div class="notice">Model tracking uses projections this dashboard saved in <b>this browser</b> while it was open. Games it never saw live won't have in-game checkpoints. To track every game automatically, the next step is a small scheduled backend (see the note in Settings).</div>
+  <div class="section"><h3>Accuracy by game situation <small>— ${finals.length} completed games with saved projections</small></h3>${rows.length ? `<div class="tw"><table><thead><tr><th>Checkpoint</th><th>Games</th><th>Total MAE</th><th>Book total MAE</th><th>Naive pace MAE</th><th>Margin MAE</th><th>Possessions MAE</th><th>Win-prob Brier</th><th>Total bias</th></tr></thead><tbody>${tbl}</tbody></table></div>
+    <div class="note">MAE = mean absolute error in points (lower is better). “Book total” is the sportsbook total that was posted at that moment. “Naive pace” is the simple current-pace extrapolation, a baseline that the luck-adjusted model should beat. Brier: 0.25 = coin flip, lower is better.</div>` : '<div class="note">No completed games with saved projections yet. Leave the scoreboard open during games and results will appear here after they go final.</div>'}</div>
+  <div class="two"><div class="section"><h3>Win probability calibration</h3>${calChart || '<div class="note">Not enough data yet.</div>'}</div>
+  <div><div class="section"><h3>Luck-adjustment check (halftime)</h3>${lucky.length ? `<table><tbody><tr><td>Games</td><td class="num">${lucky.length}</td></tr><tr><td>Luck-adjusted model total MAE</td><td class="num">${f1(mae(lucky.map(x => x.errT)))}</td></tr><tr><td>Naive extrapolation MAE</td><td class="num">${f1(mae(lucky.map(x => x.naiveErr)))}</td></tr></tbody></table><div class="note">If the luck adjustment is working, the model's error should be smaller than the naive extrapolation's.</div>` : '<div class="note">Not enough data yet.</div>'}</div>
+  <div class="section"><h3>By situation</h3><table><thead><tr><th></th><th>N</th><th>Total MAE</th><th>Margin MAE</th><th>Brier</th></tr></thead><tbody>${sit}</tbody></table></div></div></div>
+  <div class="section"><h3>By conference <small>(halftime projections, home team's conference)</small></h3>${confRows ? `<table><thead><tr><th>Conference</th><th>Games</th><th>Total MAE</th><th>Margin MAE</th><th>Brier</th></tr></thead><tbody>${confRows}</tbody></table>` : '<div class="note">Not enough data yet.</div>'}</div>
+  <div class="section"><h3>Review a past game <small>— click to open the scoreboard on that date with the game's saved projections</small></h3>${list ? `<div class="tw"><table><thead><tr><th>Date</th><th>Game</th><th>Conf</th><th>Snapshots</th><th>Pregame total</th></tr></thead><tbody>${list}</tbody></table></div>` : '<div class="note">Nothing stored yet.</div>'}</div>`;
+  renderStatus();
+}
+
+/* =========================================================================
+   SCHEDULER
+   ========================================================================= */
+function anyLive(){ for (const g of S.games.values()) if (g.status === 'in' || g.status === 'half') return true; return false; }
+function soonStarting(){ const now = Date.now(); for (const g of S.games.values()) if (g.status === 'pre' && Date.parse(g.date) - now < 20*60e3 && Date.parse(g.date) - now > -3*3600e3) return true; return false; }
+function recompute(g){ try { const p = project(g); if (p) { S.proj.set(g.gid, p); logSnapshot(g, p); } } catch (e){ console.error('projection failed', g.gid, e); } }
+
+let sbTimer = null, sumTimer = null, proxyTimer = null, loadToken = 0;
+async function loadDate(date){
+  const token = ++loadToken; S.date = date; S.games.clear(); S.proj.clear(); S.loading = true; renderDays(); renderBoard();
+  await refreshScoreboard(token);
+  S.loading = false; renderBoard();
+  // Background: conference names, team priors for today's teams (lazily, rate limited)
+  loadStandings(currentSeason()).then(st => { if (st){ for (const [id, c] of Object.entries(st.conf)) S.conf.set(id, c); fillConfSelect(); renderBoard(); } });
+  warmPriors(token);
+}
+async function warmPriors(token){
+  const games = [...S.games.values()].sort((a, b) => ({ in: 0, half: 0, pre: 1, other: 2, post: 3 }[a.status] - { in: 0, half: 0, pre: 1, other: 2, post: 3 }[b.status]));
+  for (const g of games){ if (token !== loadToken) return; if (g.status === 'post' && !S.open) continue;
+    await Promise.all([loadPrior(g.home.id), loadPrior(g.away.id)]); recompute(g); }
+  if (S.view === 'board') renderBoard();
+}
+async function refreshScoreboard(token = loadToken){
+  try {
+    const list = await fetchScoreboard(S.date); if (token !== loadToken) return;
+    for (const g of list){ const prev = S.games.get(g.gid); if (prev){ g.pregameLine = prev.pregameLine; }
+      if (!g.pregameLine){ const stored = await DB.get('games', g.gid); if (stored && stored.pregameLine) g.pregameLine = stored.pregameLine; }
+      S.games.set(g.gid, g); if (g.odds) recordOdds(g, g.odds); }
+    for (const id of [...S.games.keys()]) if (!list.find(g => g.gid === id)) S.games.delete(id);
+    for (const g of S.games.values()) recompute(g);
+    fillConfSelect();
+  } catch (e){ /* health already marked; keep last good data on screen */ }
+  if (S.view === 'board') renderBoard(); else renderStatus();
+  if (S.open) renderDetail();
+}
+let rr = 0;
+async function refreshSummaries(){
+  if (document.hidden) return;
+  const live = [...S.games.values()].filter(g => g.status === 'in' || g.status === 'half');
+  const jobs = [];
+  if (S.open && S.games.get(S.open) && S.games.get(S.open).status !== 'pre') jobs.push(S.open);
+  // round-robin through other live games: each refreshed at most every ~30s
+  const now = Date.now();
+  const stale = live.filter(g => g.gid !== S.open && (!S.details.has(g.gid) || now - S.details.get(g.gid).ts > Math.max(30e3, S.settings.refresh*2e3)));
+  stale.sort((a, b) => (S.details.get(a.gid)?.ts || 0) - (S.details.get(b.gid)?.ts || 0));
+  jobs.push(...stale.slice(0, 6).map(g => g.gid));
+  // finished games just went final: one last pull for final poss
+  for (const g of S.games.values()) if (g.status === 'post' && S.details.has(g.gid) && !S.details.get(g.gid).finalPulled && S.date === todayStr()){ jobs.push(g.gid); S.details.get(g.gid).finalPulled = true; }
+  await Promise.all(jobs.map(gid => fetchSummary(gid).then(d => { const g = S.games.get(gid); if (g){ if (g.status === 'post') d.finalPulled = true; recompute(g); for (const o of d.pick) recordOdds(g, o); } }).catch(() => {})));
+  if (jobs.length){ if (S.view === 'board') renderBoard(); if (S.open){ S.detailHist = { snaps: await DB.byGame('snaps', S.open), odds: await DB.byGame('odds', S.open) }; renderDetail(); } }
+}
+function schedule(){
+  clearTimeout(sbTimer); clearTimeout(sumTimer); clearTimeout(proxyTimer);
+  const loopSb = async () => {
+    const isToday = Math.abs(Date.parse(S.date) - Date.parse(todayStr())) <= 86400e3;
+    if (!document.hidden && isToday) await refreshScoreboard();
+    const wait = anyLive() ? S.settings.refresh*1000 : soonStarting() ? 30e3 : 60e3;
+    sbTimer = setTimeout(loopSb, wait);
+  };
+  const loopSum = async () => { await refreshSummaries(); sumTimer = setTimeout(loopSum, Math.max(5, S.settings.refresh)*1000); };
+  const loopProxy = async () => { if (S.settings.proxy && !document.hidden){ await fetchProxyOdds(); for (const g of S.games.values()) recompute(g); if (S.view === 'board') renderBoard(); } proxyTimer = setTimeout(loopProxy, Math.max(60, S.settings.proxyEvery)*1000); };
+  sbTimer = setTimeout(loopSb, S.settings.refresh*1000); sumTimer = setTimeout(loopSum, 1500); proxyTimer = setTimeout(loopProxy, 2000);
+}
+
+/* =========================================================================
+   EVENTS
+   ========================================================================= */
+document.addEventListener('click', e => {
+  const t = e.target;
+  const cardEl = t.closest('.card'); if (cardEl){ S.openTab = S.openTab || 'overview'; openGame(cardEl.dataset.gid); return; }
+  if (t.closest('[data-closegame]') || t.id === 'overlay'){ closeGame(); return; }
+  const tab = t.closest('[data-tab]'); if (tab){ S.openTab = tab.dataset.tab; renderDetail(); return; }
+  const day = t.closest('[data-day]'); if (day && day.classList.contains('day')){ loadDate(day.dataset.day); return; }
+  const st = t.closest('[data-st]'); if (st){ S.filter.st = st.dataset.st; document.querySelectorAll('[data-st]').forEach(b => b.classList.toggle('on', b === st)); renderBoard(); return; }
+  const v = t.closest('[data-view]'); if (v){ S.view = v.dataset.view; document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b === v)); document.getElementById('filters').style.display = S.view === 'board' ? '' : 'none'; S.view === 'board' ? renderBoard() : renderPerf(); return; }
+  const hist = t.closest('[data-hist]'); if (hist){ const gid = hist.dataset.hist, dd = hist.dataset.day; S.view = 'board'; document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === 'board')); document.getElementById('filters').style.display = '';
+    (dd && dd !== S.date ? loadDate(dd) : Promise.resolve()).then(() => { S.openTab = 'timeline'; openGame(gid); }); return; }
+  if (t.closest('[data-close]')) document.getElementById('settings').classList.remove('open');
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape'){ closeGame(); document.getElementById('settings').classList.remove('open'); } });
+document.getElementById('prevDay').onclick = () => loadDate(addDays(S.date, -1));
+document.getElementById('nextDay').onclick = () => loadDate(addDays(S.date, 1));
+document.getElementById('todayBtn').onclick = () => loadDate(todayStr());
+document.getElementById('datePick').onchange = e => e.target.value && loadDate(e.target.value);
+document.getElementById('refreshBtn').onclick = async () => { await refreshScoreboard(); await refreshSummaries(); };
+document.getElementById('confSel').onchange = e => { S.filter.conf = e.target.value; renderBoard(); };
+document.getElementById('sortSel').onchange = e => { S.filter.sort = e.target.value; renderBoard(); };
+document.getElementById('rankedOnly').onchange = e => { S.filter.ranked = e.target.checked; renderBoard(); };
+document.getElementById('search').oninput = e => { S.filter.q = e.target.value.trim(); renderBoard(); };
+document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('settings').classList.add('open'); };
+document.getElementById('saveSettings').onclick = () => {
+  const url = document.getElementById('setProxy').value.trim();
+  if (/api[_-]?key=|apikey=/i.test(url)){ alertBox('That URL contains an API key. Keep keys on your backend proxy — paste only the proxy URL.'); return; }
+  S.settings.refresh = clamp(+document.getElementById('setRefresh').value || 15, 5, 60); S.settings.sims = +document.getElementById('setSims').value || 1000;
+  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900);
+  saveSettingsLS(); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
+};
+function alertBox(msg){ const b = document.querySelector('#settings .box'); let n = b.querySelector('.notice'); if (!n){ n = document.createElement('div'); n.className = 'notice'; b.insertBefore(n, b.children[2]); } n.textContent = msg; }
+document.getElementById('exportData').onclick = async () => {
+  const data = { exported: new Date().toISOString(), games: await DB.all('games'), snaps: await DB.all('snaps'), odds: await DB.all('odds') };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' })); a.download = 'hoops-lab-history-' + todayStr() + '.json'; a.click();
+};
+document.getElementById('clearData').onclick = async () => { await DB.clear(); alertBox('Stored history cleared.'); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden){ refreshScoreboard(); refreshSummaries(); } });
+
+/* =========================================================================
+   BOOT
+   ========================================================================= */
+(async function boot(){
+  await DB.open();
+  const qd = new URLSearchParams(location.search).get('date');
+  await loadDate(qd && /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : todayStr());
+  schedule();
+})();
+</script>
+</body>
+</html>
