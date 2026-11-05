@@ -111,9 +111,9 @@ jobs:
             }
           }
           function prevSeasonStats(id, season){ try { return JSON.parse(cache[`hl.ts.${id}.${season - 1}`]).v || null; } catch { return null; } }
-          function computeRatings(LOG){
+          function computeRatings(LOG, asOf = null, light = false){
             const d1 = new Set(S.conf.keys());
-            const games = LOG.games.filter(x => (!d1.size || (d1.has(x.h) && d1.has(x.a))) && x.hp && x.ap);
+            const games = LOG.games.filter(x => (!d1.size || (d1.has(x.h) && d1.has(x.a))) && x.hp && x.ap && (!asOf || x.day <= asOf));
             const possOf = x => (x.hp + x.ap) / 2;
             let pts = 0, ps = 0; for (const x of games){ pts += x.hs + x.as; ps += 2 * possOf(x); }
             const lgEff = games.length > 40 ? pts / ps * 100 : H.LEAGUE.eff;
@@ -126,7 +126,7 @@ jobs:
               prior[id] = { o: reg(p && p.ortg, lgEff), d: reg(p && p.drtg, lgEff), t: reg(p && p.pace, lgT), known: !!p }; }
             const byTeam = {}; for (const x of games){ (byTeam[x.h] = byTeam[x.h] || []).push(x); (byTeam[x.a] = byTeam[x.a] || []).push(x); }
             let R = {}; for (const id of teams) R[id] = Object.assign({}, prior[id]);
-            const nowT = Date.now();
+            const nowT = asOf ? Date.parse(asOf + 'T23:59:00Z') : Date.now();
             for (let it = 0; it < 30; it++){
               const N = {};
               for (const id of teams){
@@ -143,6 +143,7 @@ jobs:
               }
               R = N;
             }
+            if (light){ const out = {}; [...teams].filter(id => d1.has(id) || !d1.size).sort((a, b) => (R[b].o - R[b].d) - (R[a].o - R[a].d)).forEach((id, i) => out[id] = [+(R[id].o - R[id].d).toFixed(2), i + 1, +R[id].o.toFixed(1), +R[id].d.toFixed(1), +R[id].t.toFixed(1)]); return { games: games.length, teams: out }; }
             // Season profiles: strength of schedule, clutch, halftime adjustment, four factors (offense & defense)
             const prof = {};
             const P = id => prof[id] = prof[id] || { sos: [], cl: { pf: 0, pa: 0, pos: 0, opos: 0, g: 0, w: 0, l: 0 }, h1: [], h2: [], o: { fga: 0, fgm: 0, tpm: 0, fta: 0, to: 0, orb: 0, oppDrb: 0, poss: 0 }, d: { fga: 0, fgm: 0, tpm: 0, fta: 0, to: 0, orb: 0, oppDrb: 0, poss: 0 } };
@@ -339,7 +340,20 @@ jobs:
             S.games.clear(); S.details.clear();
             // make sure last-season stats are cached for the rating priors (spread over runs)
             for (const id of S.conf.keys()){ if (priorBudget <= 0) break; if (!cache[`hl.ts.${id}.${season - 1}`]){ priorBudget--; await H.loadPrior(id); } }
-            const ratings = computeRatings(LOG); S.ratings = ratings; writeJ('ratings.json', ratings); status.ratedGames = ratings.games;
+            const ratings = computeRatings(LOG); S.ratings = ratings; status.ratedGames = ratings.games;
+            // Daily rating history (net, rank, off, def, tempo per team) for trend lines; backfills missing days from the game log
+            const HIST = readJ('ratings-history.json', null);
+            const hist = HIST && HIST.season === season ? HIST : { season, days: {} };
+            const firstDay = LOG.games.reduce((m, x) => !m || x.day < m ? x.day : m, null);
+            if (firstDay){ let budgetDays = 12;
+              for (let d = firstDay; d < today && budgetDays > 0; d = nextDay(d)){ if (hist.days[d]) continue; const r = computeRatings(LOG, d, true); hist.days[d] = { games: r.games, t: r.teams }; budgetDays--; } }
+            const cur = {}; for (const [id, r] of Object.entries(ratings.teams)) cur[id] = [r.net, r.rk, +r.o.toFixed(1), +r.d.toFixed(1), +r.t.toFixed(1)];
+            hist.days[today] = { games: ratings.games, t: cur };
+            writeJ('ratings-history.json', hist);
+            // 7-day rank change for the rankings table
+            const wk = Object.keys(hist.days).filter(d => d <= (() => { const t = new Date(today + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() - 7); return t.toISOString().slice(0, 10); })()).sort().pop();
+            if (wk) for (const [id, r] of Object.entries(ratings.teams)){ const old = hist.days[wk].t[id]; if (old) r.rk7 = old[1] - r.rk; }
+            writeJ('ratings.json', ratings);
             for (const d of daysToRun) await runDay(d);
             writeJ('log.json', LOG); writeJ('state.json', STATE);
             writeJ('perf.json', perf);
