@@ -1,0 +1,221 @@
+# Hoops Lab background collector: saves scores, lines, projections and results for every D1 game.
+# Runs every 5 minutes from about 10am to 3am Eastern. History is saved to the "data" branch.
+name: Hoops Lab collector
+
+on:
+  schedule:
+    - cron: '*/5 0-7,15-23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hoops-lab-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load saved history
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch -q --depth=1 origin data
+            git archive FETCH_HEAD | tar -x -C data
+          fi
+
+      - name: Collect games, lines and projections
+        env:
+          ODDS_PROXY_URL: ${{ vars.ODDS_PROXY_URL }}
+          PREFERRED_BOOK: ${{ vars.PREFERRED_BOOK }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_TOTAL_EDGE: ${{ vars.ALERT_TOTAL_EDGE }}
+          ALERT_SPREAD_EDGE: ${{ vars.ALERT_SPREAD_EDGE }}
+          ALERT_MIN_PROB: ${{ vars.ALERT_MIN_PROB }}
+          ALERT_PREGAME: ${{ vars.ALERT_PREGAME }}
+          DASHBOARD_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: |
+          cat > /tmp/collector.js <<'HOOPS_EOF'
+          // Hoops Lab background collector — runs in GitHub Actions every 5 minutes during game hours.
+          // Reuses the dashboard's own data + model code from index.html, and saves history to the "data" branch.
+          const fs = require('fs'), path = require('path');
+          const DATA = path.resolve(process.env.DATA_DIR || 'data');
+          fs.mkdirSync(path.join(DATA, 'days'), { recursive: true });
+          const readJ = (f, d) => { try { return JSON.parse(fs.readFileSync(path.join(DATA, f), 'utf8')); } catch { return d; } };
+          const writeJ = (f, v) => fs.writeFileSync(path.join(DATA, f), JSON.stringify(v));
+          const env = k => (process.env[k] || '').trim();
+          const numEnv = (k, d) => { const v = parseFloat(env(k)); return isFinite(v) ? v : d; };
+
+          // localStorage stand-in, saved between runs (caches team history so it isn't re-downloaded every run)
+          const cache = readJ('cache.json', {});
+          for (const [k, v] of Object.entries(cache)) { try { if (Date.now() - JSON.parse(v).t > 15 * 86400e3) delete cache[k]; } catch { delete cache[k]; } }
+          globalThis.localStorage = { getItem: k => (k in cache ? cache[k] : null), setItem: (k, v) => { cache[k] = String(v); }, removeItem: k => { delete cache[k]; } };
+
+          const html = fs.readFileSync(env('INDEX_PATH') || 'index.html', 'utf8');
+          const core = html.slice(html.indexOf('<script>') + 8, html.indexOf('/*@@CORE_END@@*/'));
+          if (core.length < 1000) throw new Error('Could not find the dashboard code in index.html (missing @@CORE_END@@ marker?)');
+          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, currentLine, gameElapsed, estPoss };')();
+          const { S } = H;
+          S.settings.book = env('PREFERRED_BOOK') || 'fanduel';
+          S.settings.sims = 1000;
+
+          const etDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+          const etHour = +new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }).format(new Date()) % 24;
+          const today = etDate(new Date());
+          const daysToRun = etHour < 7 ? [etDate(new Date(Date.now() - 86400e3)), today] : [today];
+          const forced = env('RUN_DATE'); if (forced) daysToRun.splice(0, daysToRun.length, forced);
+
+          const CPS = [['Pregame', 0], ['Halftime', 1200], ['10:00 left', 1800], ['5:00 left', 2100], ['2:00 left', 2280]];
+          const status = { lastRun: new Date().toISOString(), days: daysToRun, live: 0, games: 0, snaps: 0, odds: 0, alerts: 0, errors: [] };
+          const perf = readJ('perf.json', []);
+          const perfIds = new Set(perf.map(r => r.gid));
+          let priorBudget = 120; // max new team-history downloads per run
+
+          async function runDay(day){
+            S.date = day; S.games.clear(); S.details.clear(); S.extraOdds.clear(); S.proj.clear();
+            const file = `days/${day}.json`;
+            const D = readJ(file, { day, games: {}, snaps: [], odds: [], state: { oddsSig: {}, lastPre: {}, alerts: {} } });
+            D.state = Object.assign({ oddsSig: {}, lastPre: {}, alerts: {} }, D.state || {});
+            let list;
+            try { list = await H.fetchScoreboard(day); } catch (e){ status.errors.push(`${day} scoreboard: ${e.message}`); return; }
+            for (const g of list){ const m = D.games[g.gid]; if (m && m.pregameLine) g.pregameLine = m.pregameLine; S.games.set(g.gid, g); }
+            status.games += list.length;
+            const st = await H.loadStandings(H.currentSeason()); if (st) for (const [id, c] of Object.entries(st.conf)) S.conf.set(id, c);
+            const now = Date.now();
+            const live = list.filter(g => g.status === 'in' || g.status === 'half');
+            const soon = list.filter(g => g.status === 'pre' && Date.parse(g.date) - now < 3 * 3600e3);
+            const finishing = list.filter(g => g.status === 'post' && !(D.games[g.gid] && D.games[g.gid].final));
+            status.live += live.length;
+
+            // Team history (needed for projections + luck)
+            for (const g of [...live, ...soon, ...finishing, ...list.filter(x => x.status === 'pre')]){
+              for (const t of [g.home, g.away]){
+                if (S.priors.has(t.id)) continue;
+                const cached = Object.keys(cache).some(k => k.startsWith(`hl.ts.${t.id}.`));
+                if (!cached){ if (priorBudget <= 0) continue; priorBudget--; }
+                await H.loadPrior(t.id);
+              }
+            }
+            // Box scores + play-by-play for live games and games that just went final
+            await Promise.all([...live, ...finishing].map(g => H.fetchSummary(g.gid).catch(e => status.errors.push(`summary ${g.gid}: ${e.message}`))));
+            // Sportsbook lines from your Cloudflare Worker (only when games are live or about to start)
+            const proxy = env('ODDS_PROXY_URL');
+            if (proxy && (live.length || soon.length)){ S.settings.proxy = proxy; await H.fetchProxyOdds(); if (S.health.proxy.err && (S.health.proxy.errAt || 0) > (S.health.proxy.ok || 0)) status.errors.push('odds feed: ' + S.health.proxy.err); if (S.oddsQuota) status.credits = S.oddsQuota.remaining; }
+
+            for (const g of list){
+              const meta = D.games[g.gid] = Object.assign(D.games[g.gid] || {}, { gid: g.gid, day, date: g.date, home: g.home.name, away: g.away.name, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, homeId: g.home.id, awayId: g.away.id,
+                conf: (S.conf.get(g.home.id) || {}).abbr || '', confAway: (S.conf.get(g.away.id) || {}).abbr || '', status: g.status, h: g.home.score, a: g.away.score, period: g.period, updated: now });
+              // Line history (saved only when a number changes)
+              const det = S.details.get(g.gid);
+              const lines = [...((det && det.pick && det.pick.length) ? det.pick.slice(0, 1) : g.odds ? [g.odds] : []), ...(S.extraOdds.get(g.gid) || [])];
+              for (const o of lines){
+                const src = o.src + '|' + o.book, sig = [o.homeSpread, o.total, o.mlH, o.mlA].join(',');
+                if (D.state.oddsSig[g.gid + '|' + src] === sig) continue; D.state.oddsSig[g.gid + '|' + src] = sig;
+                D.odds.push({ gid: g.gid, src, ts: now, status: g.status, el: H.gameElapsed(g), homeSpread: o.homeSpread, total: o.total, mlH: o.mlH, mlA: o.mlA, h: g.home.score, a: g.away.score }); status.odds++;
+              }
+              if (g.status === 'other') continue;
+              if (g.status === 'post'){
+                if (!meta.final && det){
+                  meta.final = true; meta.ot = g.period > 2; meta.totH = det.totH; meta.totA = det.totA;
+                  meta.finalPoss = det.poss ? (det.poss.h + det.poss.a) / 2 : ((H.estPoss(det.totH) || 0) + (H.estPoss(det.totA) || 0)) / 2 || null;
+                  addPerf(D, meta);
+                }
+                continue;
+              }
+              let p; try { p = H.project(g); } catch (e){ status.errors.push(`project ${g.gid}: ${e.message}`); continue; }
+              if (!p || p.projT == null) continue;
+              if (g.status === 'pre'){
+                const ln = H.currentLine(g); if (ln){ meta.pregameLine = { total: ln.total, homeSpread: ln.homeSpread, mlH: ln.mlH, mlA: ln.mlA, book: ln.book }; }
+                if (now - (D.state.lastPre[g.gid] || 0) < 30 * 60e3) { await checkAlerts(D, g, p); continue; }
+                D.state.lastPre[g.gid] = now;
+              }
+              D.snaps.push({ gid: g.gid, ts: now, el: p.el, status: g.status, h: g.home.score, a: g.away.score, projH: p.projH, projA: p.projA, projT: p.projT, projM: p.projM,
+                pHome: p.pHome, pOver: p.pOver ?? null, pCoverH: p.pCoverH ?? null, lineTotal: p.line?.total ?? null, lineSpread: p.line?.homeSpread ?? null, book: p.line?.book ?? null,
+                projPoss: p.projPossH != null ? (p.projPossH + p.projPossA) / 2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: 'collector' });
+              status.snaps++;
+              await checkAlerts(D, g, p);
+            }
+            D.updated = now;
+            writeJ(file, D);
+          }
+
+          function addPerf(D, meta){
+            if (perfIds.has(meta.gid) || meta.h == null || meta.a == null) return;
+            const arr = D.snaps.filter(s => s.gid === meta.gid).sort((a, b) => a.ts - b.ts);
+            if (!arr.length) return;
+            const cps = {};
+            for (const [name, el] of CPS){
+              let s = null;
+              if (el === 0) s = arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null);
+              else { for (const x of arr) if (x.status !== 'pre' && x.el <= el + 1 && (!s || x.el >= s.el)) s = x; if (s && s.el < el - 240) s = null; }
+              if (s) cps[name] = { el: s.el, h: s.h, a: s.a, projT: s.projT, projM: s.projM, pHome: s.pHome, naiveT: s.naiveT, lineTotal: s.lineTotal, lineSpread: s.lineSpread, projPoss: s.projPoss };
+            }
+            perf.push({ gid: meta.gid, day: meta.day, home: meta.home, away: meta.away, conf: meta.conf, h: meta.h, a: meta.a, finalPoss: meta.finalPoss, ot: !!meta.ot, pregameLine: meta.pregameLine || null, cps, n: arr.length });
+            perfIds.add(meta.gid);
+          }
+
+          /* ---------- #3 Edge alerts to your phone (ntfy). Off until the NTFY_TOPIC secret is added. ---------- */
+          async function checkAlerts(D, g, p){
+            const topic = env('NTFY_TOPIC'); if (!topic || !p.line) return;
+            const live = g.status === 'in' || g.status === 'half';
+            if (g.status === 'pre' && env('ALERT_PREGAME').toLowerCase() !== 'yes') return;
+            if (live && p.el < 240) return; // skip the first 4 minutes (too little data)
+            // Live games: only alert against a genuinely live line from your sportsbook feed, updated in the last 15 minutes
+            if (live && (!String(p.line.src || '').startsWith('proxy:') || Date.now() - (p.line.ts || 0) > 15 * 60e3)) return;
+            const minEdgeT = numEnv('ALERT_TOTAL_EDGE', 4), minEdgeS = numEnv('ALERT_SPREAD_EDGE', 3), minProb = numEnv('ALERT_MIN_PROB', 0.6);
+            const A = g.away.abbr, Hm = g.home.abbr, ln = p.line, out = [];
+            if (ln.total != null && p.pOver != null){
+              const edge = p.projT - ln.total, side = edge > 0 ? 'OVER' : 'UNDER', prob = edge > 0 ? p.pOver : 1 - p.pOver - (p.pPushT || 0);
+              if (Math.abs(edge) >= minEdgeT && prob >= minProb) out.push({ key: 'total|' + side, edge: Math.abs(edge), text: `${side} ${ln.total} (${ln.book}) · model ${p.projT.toFixed(1)} · ${Math.round(prob * 100)}%` });
+            }
+            if (ln.homeSpread != null && p.pCoverH != null){
+              const edge = p.projM + ln.homeSpread, team = edge > 0 ? g.home : g.away, spread = edge > 0 ? ln.homeSpread : -ln.homeSpread;
+              const prob = edge > 0 ? p.pCoverH : 1 - p.pCoverH - (p.pPush || 0);
+              if (Math.abs(edge) >= minEdgeS && prob >= minProb) out.push({ key: 'spread|' + team.abbr, edge: Math.abs(edge), text: `${team.abbr} ${spread > 0 ? '+' : ''}${spread} (${ln.book}) · model margin ${Hm} ${p.projM > 0 ? '+' : ''}${p.projM.toFixed(1)} · ${Math.round(prob * 100)}%` });
+            }
+            for (const a of out){
+              const k = g.gid + '|' + a.key, prev = D.state.alerts[k];
+              if (prev && (a.edge < prev.edge + 2 || Date.now() - prev.ts < 10 * 60e3)) continue; // once per edge; again only if it grows 2+ pts
+              D.state.alerts[k] = { edge: a.edge, ts: Date.now() };
+              const clock = g.status === 'pre' ? 'Pregame' : g.status === 'half' ? 'Halftime' : `${g.period > 2 ? 'OT' : g.period === 1 ? '1H' : '2H'} ${g.displayClock}`;
+              const body = `${A} ${g.away.score ?? ''} @ ${Hm} ${g.home.score ?? ''} · ${clock}\n${a.text}\nEdge ${a.edge.toFixed(1)} pts (model estimate, not a guarantee)`;
+              try {
+                const r = await fetch('https://ntfy.sh/' + encodeURIComponent(topic), { method: 'POST', body,
+                  headers: { Title: `Hoops Lab edge: ${A} @ ${Hm}`, Tags: 'basketball', Priority: a.edge >= 6 ? 'high' : 'default', ...(env('DASHBOARD_URL') ? { Click: env('DASHBOARD_URL') + '?date=' + D.day } : {}) } });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                status.alerts++;
+                (D.alerts = D.alerts || []).push({ gid: g.gid, ts: Date.now(), text: body.replace(/\n/g, ' · ') });
+              } catch (e){ status.errors.push('ntfy: ' + e.message); }
+            }
+          }
+
+          (async () => {
+            for (const d of daysToRun) await runDay(d);
+            writeJ('perf.json', perf);
+            const idx = new Set(readJ('days/index.json', [])); daysToRun.forEach(d => idx.add(d)); writeJ('days/index.json', [...idx].sort());
+            writeJ('cache.json', cache);
+            writeJ('status.json', status);
+            console.log(JSON.stringify(status, null, 1));
+          })().catch(e => { console.error(e); process.exit(1); });
+
+          HOOPS_EOF
+          node /tmp/collector.js
+
+      - name: Save history to the data branch
+        run: |
+          cd data
+          rm -rf .git
+          git init -q
+          git checkout -q -b data
+          git add -A
+          git -c user.name="hoops-lab-bot" -c user.email="hoops-lab-bot@users.noreply.github.com" commit -q -m "data $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
