@@ -174,6 +174,8 @@ tr.dnp td{color:var(--text-muted)}
   <input type="url" id="setProxy" placeholder="https://your-worker.workers.dev/ncaab-odds">
   <label>Preferred sportsbook for card lines, cover status and model probabilities</label>
   <select id="setBook"><option value="fanduel">FanDuel</option><option value="draftkings">DraftKings</option><option value="williamhill_us">Caesars</option><option value="fanatics">Fanatics</option><option value="espnbet">theScore Bet</option></select>
+  <label>History repo for the background collector (owner/repo). Leave blank to detect it from your GitHub Pages address.</label>
+  <input type="text" id="setHist" placeholder="lutzcody182/Hoops-Lab">
   <label>Extra feed poll interval (seconds, min 60)</label>
   <input type="number" id="setProxyEvery" min="60" max="900">
   <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
@@ -213,7 +215,7 @@ const S = {
 };
 
 function loadSettings(){
-  const d = { refresh: 15, sims: 1000, proxy: '', proxyEvery: 120, book: 'fanduel' };
+  const d = { refresh: 15, sims: 1000, proxy: '', proxyEvery: 120, book: 'fanduel', histRepo: '' };
   try { return Object.assign(d, JSON.parse(localStorage.getItem('hl.settings') || '{}')); } catch { return d; }
 }
 function saveSettingsLS(){ try { localStorage.setItem('hl.settings', JSON.stringify(S.settings)); } catch {} }
@@ -233,7 +235,7 @@ function sgn(v, d=1){ return v == null || !isFinite(v) ? NA : (v > 0 ? '+' : '')
 function odds(v){ return v == null ? NA : (v > 0 ? '+' + v : String(v)); }
 function line(v){ return v == null ? NA : v === 0 ? 'PK' : (v > 0 ? '+' + v : String(v)); }
 function tm(ts){ return ts ? new Date(ts).toLocaleTimeString([], {hour:'numeric', minute:'2-digit', second:'2-digit'}) : '—'; }
-function ago(ts){ if (!ts) return 'never'; const s = Math.round((Date.now()-ts)/1000); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s/60) + 'm ago' : tm(ts); }
+function ago(ts){ if (!ts) return 'never'; const s = Math.max(0, Math.round((Date.now()-ts)/1000)); if (s < 5) return 'just now'; return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s/60) + 'm ago' : tm(ts); }
 function impl(ml){ if (ml == null) return null; return ml < 0 ? -ml/(-ml+100) : 100/(ml+100); }
 function devig(a, b){ const pa = impl(a), pb = impl(b); if (pa == null || pb == null) return [pa, pb]; const s = pa + pb; return [pa/s, pb/s]; }
 function shrink(p, n, prior, k){ if (p == null || !isFinite(p) || !n) return prior; return (p*n + prior*k)/(n + k); }
@@ -281,6 +283,24 @@ const DB = {
   byGame(store, gid){ if (!this.db) return Promise.resolve([]); return new Promise(res => { try { const lo = store === 'odds' ? [gid, '', 0] : [gid, 0]; const hi = store === 'odds' ? [gid, '￿', Infinity] : [gid, Infinity]; const r = this.db.transaction(store).objectStore(store).getAll(IDBKeyRange.bound(lo, hi)); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]); } catch { res([]); } }); },
   clear(){ if (!this.db) return Promise.resolve(); return Promise.all(['snaps','odds','games'].map(s => new Promise(res => { const tx = this.db.transaction(s, 'readwrite'); tx.objectStore(s).clear(); tx.oncomplete = res; tx.onerror = res; }))); }
 };
+
+/* ---------- history saved by the background collector (GitHub "data" branch) ---------- */
+const SRV = { base: null, days: new Map() };
+function initSrv(){ SRV.base = null; SRV.days.clear(); try { const custom = (S.settings.histRepo || '').trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '');
+  if (/^[\w.-]+\/[\w.-]+$/.test(custom)) SRV.base = `https://raw.githubusercontent.com/${custom}/data/`;
+  else if (typeof location !== 'undefined' && /\.github\.io$/.test(location.hostname)){ const owner = location.hostname.split('.')[0], repo = location.pathname.split('/').filter(Boolean)[0]; if (repo) SRV.base = `https://raw.githubusercontent.com/${owner}/${repo}/data/`; } } catch {} }
+initSrv();
+async function srvGet(file, ttl){ if (!SRV.base) return null; try { return await Net.get(SRV.base + file + '?t=' + Math.floor(Date.now()/ttl), { ttl, timeout: 15000 }); } catch { return null; } }
+async function loadServerPerf(){ const [p, st] = await Promise.all([srvGet('perf.json', 120e3), srvGet('status.json', 60e3)]); if (st) S.srvStatus = st; return p; }
+async function loadServerDay(day){ const d = await srvGet(`days/${day}.json`, 60e3); if (d) SRV.days.set(day, d); return d; }
+async function gameHistory(gid){
+  const [ls, lo] = await Promise.all([DB.byGame('snaps', gid), DB.byGame('odds', gid)]);
+  const g = S.games.get(gid); const day = S.date; const D = SRV.base ? await loadServerDay(day) : null;
+  const ss = D ? (D.snaps || []).filter(x => x.gid === gid) : [], so = D ? (D.odds || []).filter(x => x.gid === gid) : [];
+  // Prefer the collector's series (complete); add browser snapshots in between
+  const snaps = [...ss, ...ls].sort((a, b) => a.ts - b.ts), odds = [...so, ...lo].sort((a, b) => a.ts - b.ts);
+  return { snaps, odds, fromServer: ss.length };
+}
 
 /* =========================================================================
    CLOCK HELPERS (D1 men: two 20:00 halves, 5:00 overtimes)
@@ -745,6 +765,7 @@ function logSnapshot(g, p){
     projPoss: p.projPossH != null ? (p.projPossH + p.projPossA)/2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: p.pre.src });
 }
 
+/*@@CORE_END@@*/ // (the background collector runs everything above this line)
 /* =========================================================================
    CHART (SVG line chart with hover crosshair)
    ========================================================================= */
@@ -932,6 +953,7 @@ function renderStatus(){
   const d = (o, label) => `<span><span class="dot ${o.err && (!o.ok || o.errAt > o.ok) ? 'err' : o.ok ? 'ok' : 'idle'}"></span>${label}: ${o.ok ? ago(o.ok) : o.err ? 'error' : 'idle'}${o.err && o.errAt > (o.ok || 0) ? ' (' + esc(o.err) + ')' : ''}</span>`;
   document.getElementById('statusLine').innerHTML = `<span><b>${S.games.size}</b> games · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
     d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Sportsbook feed') + (S.oddsQuota ? `<span>Odds API credits left: <b>${S.oddsQuota.remaining ?? '?'}</b> · ${S.oddsQuota.matched ?? 0}/${S.oddsQuota.events ?? 0} games matched</span>` : '') : '<span>Sportsbook feed: not configured (DraftKings via ESPN only)</span>') +
+    (S.srvStatus ? `<span><span class="dot ${Date.now() - Date.parse(S.srvStatus.lastRun) < 20*60e3 ? 'ok' : 'idle'}"></span>Collector: ${ago(Date.parse(S.srvStatus.lastRun))}</span>` : '') +
     `<span><span class="model">dotted</span> / <span class="tag">MODEL</span> = model estimate</span><span>Auto-refresh: ${anyLive() ? S.settings.refresh + 's (live)' : S.date === todayStr() ? '60s' : 'off (past/future date)'}</span>`;
 }
 function fillConfSelect(){
@@ -956,7 +978,7 @@ async function openGame(gid){
   renderDetail();
   const g = S.games.get(gid);
   if (g){ await Promise.all([loadPrior(g.home.id), loadPrior(g.away.id), g.status !== 'pre' || !S.details.has(gid) ? fetchSummary(gid).catch(()=>{}) : null]); recompute(g); }
-  S.detailHist = { snaps: await DB.byGame('snaps', gid), odds: await DB.byGame('odds', gid) };
+  S.detailHist = await gameHistory(gid);
   renderDetail();
 }
 function closeGame(){ S.open = null; document.getElementById('overlay').classList.remove('open'); document.body.style.overflow = ''; }
@@ -1215,7 +1237,7 @@ function tabTimeline(g, det){
     const nv = tots.filter(s => s.naiveT != null); if (nv.length) series.push({ name: 'Naive pace extrapolation', color: '#8f8e86', dash: true, points: nv.map(s => [s.el, s.naiveT]) });
     const lt = tots.filter(s => s.lineTotal != null); if (lt.length) series.push({ name: 'Sportsbook total', color: '#c98500', points: lt.map(s => [s.el, s.lineTotal]) });
     const refs = g.status === 'post' ? [{ y: g.home.score + g.away.score, label: 'Actual ' + (g.home.score + g.away.score), color: '#3fb873' }] : [];
-    h += `<div class="section"><h3>What the dashboard projected during the game</h3>${lineChart({ series, xMax: Math.max(2400, ...tots.map(s => s.el)), xFmt: gameClockFmt, yFmt: (v, l) => l ? v.toFixed(1) : Math.round(v), refs })}<div class="note">${snaps.length} saved projections.</div></div>`;
+    h += `<div class="section"><h3>What the dashboard projected during the game</h3>${lineChart({ series, xMax: Math.max(2400, ...tots.map(s => s.el)), xFmt: gameClockFmt, yFmt: (v, l) => l ? v.toFixed(1) : Math.round(v), refs })}<div class="note">${snaps.length} saved projections${S.detailHist && S.detailHist.fromServer ? ` (${S.detailHist.fromServer} from the background collector)` : ''}.</div></div>`;
   }
   if (det && det.plays && det.plays.length){
     const recent = det.plays.slice(-60).reverse();
@@ -1230,15 +1252,21 @@ function tabTimeline(g, det){
 async function renderPerf(){
   const m = document.getElementById('main');
   m.innerHTML = '<div class="empty">Loading stored history…</div>';
-  const [games, snaps] = await Promise.all([DB.all('games'), DB.all('snaps')]);
+  const [games, snaps, server] = await Promise.all([DB.all('games'), DB.all('snaps'), loadServerPerf()]);
   const byG = {}; for (const s of snaps) (byG[s.gid] = byG[s.gid] || []).push(s);
-  const finals = games.filter(g => g.status === 'post' && g.h != null && g.a != null && byG[g.gid]);
   const cps = [['Pregame', 0], ['Halftime', 1200], ['10:00 left', 1800], ['5:00 left', 2100], ['2:00 left', 2280]];
   const pickAt = (arr, el) => { let best = null; for (const s of arr) { if (s.el <= el + 1 && (!best || s.el >= best.el)) best = s; } return best; };
+  // Games tracked by the background collector (every game) + games this browser saw live
+  const fin = new Map();
+  for (const g of server || []) fin.set(g.gid, Object.assign({ src: 'collector' }, g));
+  for (const g of games){ if (fin.has(g.gid) || g.status !== 'post' || g.h == null || g.a == null || !byG[g.gid]) continue;
+    const arr = byG[g.gid].sort((a, b) => a.ts - b.ts); const c = {};
+    for (const [name, el] of cps){ const s = el === 0 ? arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null) : pickAt(arr.filter(x => x.status !== 'pre'), el); if (s && !(el > 0 && s.el < el - 240)) c[name] = s; }
+    fin.set(g.gid, Object.assign({ src: 'browser', cps: c, n: arr.length }, g)); }
+  const finals = [...fin.values()];
   const rows = []; // per game per checkpoint
-  for (const g of finals){ const arr = byG[g.gid].sort((a, b) => a.ts - b.ts);
-    for (const [name, el] of cps){ const s = el === 0 ? arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null) : pickAt(arr.filter(x => x.status !== 'pre'), el);
-      if (!s || (el > 0 && s.el < el - 240)) continue; const T = g.h + g.a, M = g.h - g.a;
+  for (const g of finals){ const T = g.h + g.a, M = g.h - g.a;
+    for (const [name] of cps){ const s = g.cps && g.cps[name]; if (!s || s.projT == null) continue;
       rows.push({ gid: g.gid, cp: name, conf: g.conf || '—', errT: s.projT - T, errM: s.projM - M, pHome: s.pHome, won: M > 0 ? 1 : 0, naiveErr: s.naiveT != null ? s.naiveT - T : null,
         possErr: s.projPoss != null && g.finalPoss != null ? s.projPoss - g.finalPoss : null, lineErr: s.lineTotal != null ? s.lineTotal - T : null, close: Math.abs((s.h ?? 0) - (s.a ?? 0)) <= 6 }); } }
   const mae = a => a.length ? mean(a.map(Math.abs)) : null;
@@ -1254,8 +1282,9 @@ async function renderPerf(){
   const sit = [['Close at checkpoint (≤6)', rows.filter(r => r.cp !== 'Pregame' && r.close)], ['Not close (>6)', rows.filter(r => r.cp !== 'Pregame' && !r.close)]].map(([n, r]) => `<tr><td>${n}</td><td class="num">${r.length}</td><td class="num">${f1(mae(r.map(x => x.errT)))}</td><td class="num">${f1(mae(r.map(x => x.errM)))}</td><td class="num">${f1(brier(r), 3)}</td></tr>`).join('');
   const half = rows.filter(r => r.cp === 'Halftime');
   const lucky = half.filter(r => r.naiveErr != null);
-  const list = finals.sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 200).map(g => `<tr class="gl" data-hist="${g.gid}" data-day="${g.day || ''}" style="cursor:pointer"><td>${esc(g.day || '')}</td><td style="text-align:left">${esc(g.away)} ${g.a} @ ${esc(g.home)} ${g.h}</td><td style="text-align:left">${esc(g.conf || '')}</td><td class="num">${byG[g.gid].length}</td><td class="num">${g.pregameLine?.total ?? NA}</td></tr>`).join('');
-  m.innerHTML = `<div class="notice">Model tracking uses projections this dashboard saved in <b>this browser</b> while it was open. Games it never saw live won't have in-game checkpoints. To track every game automatically, the next step is a small scheduled backend (see the note in Settings).</div>
+  const list = finals.sort((a, b) => String(b.day || '').localeCompare(String(a.day || '')) || (b.updated || 0) - (a.updated || 0)).slice(0, 200).map(g => `<tr class="gl" data-hist="${g.gid}" data-day="${g.day || ''}" style="cursor:pointer"><td>${esc(g.day || '')}</td><td style="text-align:left">${esc(g.away)} ${g.a} @ ${esc(g.home)} ${g.h}</td><td style="text-align:left">${esc(g.conf || '')}</td><td class="num">${g.n ?? '—'}</td><td class="num">${g.pregameLine?.total ?? NA}</td></tr>`).join('');
+  const nSrv = finals.filter(g => g.src === 'collector').length;
+  m.innerHTML = `<div class="notice">${server ? `<b>${nSrv}</b> games from the background collector (every game, saved about every 5 minutes)${finals.length - nSrv ? ` + <b>${finals.length - nSrv}</b> seen live in this browser` : ''}. ${S.srvStatus ? `Collector last ran ${ago(Date.parse(S.srvStatus.lastRun))}.` : ''}` : `Background collector history not found${SRV.base ? '' : ' (open the dashboard from your GitHub Pages address to use it)'} — showing only games this browser saw live.`}</div>
   <div class="section"><h3>Accuracy by game situation <small>— ${finals.length} completed games with saved projections</small></h3>${rows.length ? `<div class="tw"><table><thead><tr><th>Checkpoint</th><th>Games</th><th>Total MAE</th><th>Book total MAE</th><th>Naive pace MAE</th><th>Margin MAE</th><th>Possessions MAE</th><th>Win-prob Brier</th><th>Total bias</th></tr></thead><tbody>${tbl}</tbody></table></div>
     <div class="note">MAE = mean absolute error in points (lower is better). “Book total” is the sportsbook total that was posted at that moment. “Naive pace” is the simple current-pace extrapolation, a baseline that the luck-adjusted model should beat. Brier: 0.25 = coin flip, lower is better.</div>` : '<div class="note">No completed games with saved projections yet. Leave the scoreboard open during games and results will appear here after they go final.</div>'}</div>
   <div class="two"><div class="section"><h3>Win probability calibration</h3>${calChart || '<div class="note">Not enough data yet.</div>'}</div>
@@ -1316,7 +1345,7 @@ async function refreshSummaries(){
   // finished games just went final: one last pull for final poss
   for (const g of S.games.values()) if (g.status === 'post' && S.details.has(g.gid) && !S.details.get(g.gid).finalPulled && S.date === todayStr()){ jobs.push(g.gid); S.details.get(g.gid).finalPulled = true; }
   await Promise.all(jobs.map(gid => fetchSummary(gid).then(d => { const g = S.games.get(gid); if (g){ if (g.status === 'post') d.finalPulled = true; recompute(g); for (const o of d.pick) recordOdds(g, o); } }).catch(() => {})));
-  if (jobs.length){ if (S.view === 'board') renderBoard(); if (S.open){ S.detailHist = { snaps: await DB.byGame('snaps', S.open), odds: await DB.byGame('odds', S.open) }; renderDetail(); } }
+  if (jobs.length){ if (S.view === 'board') renderBoard(); if (S.open){ S.detailHist = await gameHistory(S.open); renderDetail(); } }
 }
 function schedule(){
   clearTimeout(sbTimer); clearTimeout(sumTimer); clearTimeout(proxyTimer);
@@ -1328,6 +1357,8 @@ function schedule(){
   };
   const loopSum = async () => { await refreshSummaries(); sumTimer = setTimeout(loopSum, Math.max(5, S.settings.refresh)*1000); };
   const loopProxy = async () => { if (S.settings.proxy && !document.hidden){ await fetchProxyOdds(); for (const g of S.games.values()) recompute(g); if (S.view === 'board') renderBoard(); } proxyTimer = setTimeout(loopProxy, Math.max(60, S.settings.proxyEvery)*1000); };
+  const loopSrv = async () => { if (SRV.base && !document.hidden){ const st = await srvGet('status.json', 60e3); if (st){ S.srvStatus = st; renderStatus(); } } setTimeout(loopSrv, 120e3); };
+  if (!schedule.srvStarted){ schedule.srvStarted = true; loopSrv(); }
   sbTimer = setTimeout(loopSb, S.settings.refresh*1000); sumTimer = setTimeout(loopSum, 1500); proxyTimer = setTimeout(loopProxy, 2000);
 }
 
@@ -1359,13 +1390,13 @@ document.getElementById('confSel').onchange = e => { S.filter.conf = e.target.va
 document.getElementById('sortSel').onchange = e => { S.filter.sort = e.target.value; renderBoard(); };
 document.getElementById('rankedOnly').onchange = e => { S.filter.ranked = e.target.checked; renderBoard(); };
 document.getElementById('search').oninput = e => { S.filter.q = e.target.value.trim(); renderBoard(); };
-document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('settings').classList.add('open'); };
+document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('setHist').value = s.histRepo || ''; document.getElementById('settings').classList.add('open'); };
 document.getElementById('saveSettings').onclick = () => {
   const url = document.getElementById('setProxy').value.trim();
   if (/api[_-]?key=|apikey=/i.test(url)){ alertBox('That URL contains an API key. Keep keys on your backend proxy — paste only the proxy URL.'); return; }
   S.settings.refresh = clamp(+document.getElementById('setRefresh').value || 15, 5, 60); S.settings.sims = +document.getElementById('setSims').value || 1000;
-  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900); S.settings.book = document.getElementById('setBook').value;
-  saveSettingsLS(); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
+  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900); S.settings.book = document.getElementById('setBook').value; S.settings.histRepo = document.getElementById('setHist').value.trim();
+  saveSettingsLS(); initSrv(); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
 };
 function alertBox(msg){ const b = document.querySelector('#settings .box'); let n = b.querySelector('.notice'); if (!n){ n = document.createElement('div'); n.className = 'notice'; b.insertBefore(n, b.children[2]); } n.textContent = msg; }
 document.getElementById('exportData').onclick = async () => {
