@@ -60,6 +60,19 @@ tr.rk25 td{font-weight:600}tr.rkline td{border-top:2px solid #55544e}
 .pf1{color:var(--warn);font-weight:700}.pf2{color:#ff9d6b;font-weight:800}.pf3{color:var(--bad);font-weight:800;text-decoration:line-through}
 .flr{font-size:11.5px;white-space:nowrap}.flr.on{color:var(--good)}.flr.off{color:var(--text-muted)}
 th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--text-primary)}th.sortable .ar{font-size:9px;margin-left:3px;opacity:.9}
+.ticker{position:fixed;left:0;right:0;bottom:0;height:34px;z-index:30;background:#121211;border-top:1px solid var(--border);display:flex;align-items:center;overflow:hidden;font-size:13px}
+.ticker .tlab{flex:0 0 auto;height:100%;display:flex;align-items:center;padding:0 12px;background:var(--live);color:#fff;font-weight:800;letter-spacing:.5px;font-size:11px;z-index:2}
+.ticker .tvp{flex:1;overflow:hidden;height:100%;position:relative;mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
+.ticker .trk{position:absolute;top:0;height:100%;display:flex;align-items:center;white-space:nowrap;will-change:transform;animation:tick var(--dur,60s) linear infinite}
+.ticker:hover .trk{animation-play-state:paused}
+@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion: reduce){.ticker .trk{animation:none;position:static}.ticker .tvp{overflow-x:auto}}
+.ticker .ti{padding:0 14px;cursor:pointer;color:var(--text-secondary);border-right:1px solid var(--border)}.ticker .ti:hover{color:var(--text-primary)}
+.ticker .ti b{color:var(--text-primary)}.ticker .ti .w{color:var(--text-primary);font-weight:800}
+.ticker .ti.al{color:#f0c060}.ticker .ti.al b{color:#ffd98a}
+.ticker .ti .lv{color:#ff9d9d;font-weight:700;margin-right:5px}
+.ticker .tx{flex:0 0 auto;background:none;border:0;color:var(--text-muted);cursor:pointer;padding:0 10px;font-size:14px}
+body.has-ticker main{padding-bottom:70px}
 .bonus{font-weight:700;color:var(--warn)}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
 .card:hover{border-color:#55544e}
@@ -177,6 +190,7 @@ tr.dnp td{color:var(--text-muted)}
 </header>
 <main id="main"></main>
 
+<div class="ticker" id="ticker" style="display:none"><div class="tlab">HOOPS LAB</div><div class="tvp"><div class="trk" id="tickTrack"></div></div><button class="tx" id="tickClose" title="Hide the ticker (turn it back on in Settings)">✕</button></div>
 <div class="overlay" id="overlay"><div class="panel" id="panel"></div></div>
 
 <div class="modal" id="settings"><div class="box">
@@ -188,6 +202,7 @@ tr.dnp td{color:var(--text-muted)}
   <select id="setSims"><option>500</option><option>1000</option><option>2000</option><option>4000</option></select>
   <label>Sportsbook feed URL — your Cloudflare Worker, e.g. https://hoops-lab-odds.yourname.workers.dev/ncaab-odds (never paste an API key here)</label>
   <input type="url" id="setProxy" placeholder="https://your-worker.workers.dev/ncaab-odds">
+  <label><input type="checkbox" id="setTicker" style="width:auto"> Show the bottom-line ticker</label>
   <label>Preferred sportsbook for card lines, cover status and model probabilities</label>
   <select id="setBook"><option value="fanduel">FanDuel</option><option value="draftkings">DraftKings</option><option value="williamhill_us">Caesars</option><option value="fanatics">Fanatics</option><option value="espnbet">theScore Bet</option></select>
   <label>History repo for the background collector (owner/repo). Leave blank to detect it from your GitHub Pages address.</label>
@@ -1344,10 +1359,49 @@ function renderBoard(){
     (S.loading && !S.games.size ? '<div class="empty">Loading games…</div>' : list.length ? `<div class="grid ${S.cardView === 'stats' ? 'wide' : ''}">${list.map(card).join('')}</div>` : `<div class="empty">${S.games.size ? 'No games match these filters.' : 'No D1 games found for this date.'}</div>`);
   renderStatus();
 }
+/* ---------- Bottom-line ticker ---------- */
+function tickerItems(){
+  const vis = visibleGames(), items = [];
+  const nm = t => `${t.rank ? '<small>' + t.rank + '</small> ' : ''}${esc(t.abbr || t.short)}`;
+  const sc = (g, fin) => { const aw = (g.away.score ?? 0) > (g.home.score ?? 0), hw = (g.home.score ?? 0) > (g.away.score ?? 0);
+    return `${nm(g.away)} <span class="${fin && aw ? 'w' : ''}">${g.away.score ?? ''}</span> &nbsp;${nm(g.home)} <span class="${fin && hw ? 'w' : ''}">${g.home.score ?? ''}</span>`; };
+  // alerts first: upsets, buzzer-beaters, comebacks, bad beats
+  for (const g of vis){ const u = upsetInfo(g); if (u) items.push({ gid: g.gid, al: true, html: `${u.level === 'upset' ? '🚨 <b>UPSET</b>' : '🚨 <b>UPSET WATCH</b>'} ${esc(u.dog.abbr)} (+${u.pts}) ${u.level === 'upset' ? 'beat' : u.margin > 0 ? 'leads' : 'within ' + -u.margin + ' of'} ${esc(u.fav.abbr)} ${u.dog.score}-${u.fav.score}` }); }
+  for (const e of allFeed()){ if (!['buzzer', 'winner', 'comeback', 'bad'].includes(e.type)) continue;
+    items.push({ gid: e.gid, al: true, html: `${e.type === 'bad' ? '😩 <b>BAD BEAT</b>' : e.type === 'comeback' ? '🔥 <b>COMEBACK</b>' : '⏱️ <b>CLUTCH</b>'} ${esc(e.text)}` }); }
+  const live = vis.filter(g => g.status === 'in' || g.status === 'half').sort((a, b) => ((a.home.rank || 99) + (a.away.rank || 99)) - ((b.home.rank || 99) + (b.away.rank || 99)));
+  for (const g of live) items.push({ gid: g.gid, html: `<span class="lv">${g.status === 'half' ? 'HALF' : '● ' + esc(periodName(g.period)) + ' ' + esc(g.displayClock)}</span>${sc(g, false)}` });
+  const fin = vis.filter(g => g.status === 'post').sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  for (const g of fin) items.push({ gid: g.gid, html: `<span style="color:var(--text-muted);font-weight:700;margin-right:5px">${g.period > 2 ? 'F/' + (g.period === 3 ? 'OT' : (g.period - 2) + 'OT') : 'FINAL'}</span>${sc(g, true)}` });
+  const up = vis.filter(g => g.status === 'pre' && Date.parse(g.date) - Date.now() < 6*3600e3).sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+  for (const g of up){ const ln = currentLine(g); const sp = ln && ln.homeSpread != null ? (ln.homeSpread === 0 ? 'PK' : `${esc((ln.homeSpread < 0 ? g.home : g.away).abbr)} ${-Math.abs(ln.homeSpread)}`) : '';
+    items.push({ gid: g.gid, html: `<span style="color:var(--text-muted);margin-right:5px">${new Date(g.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>${nm(g.away)} @ ${nm(g.home)}${sp || (ln && ln.total != null) ? ` <span style="color:var(--text-muted)">· ${sp}${ln && ln.total != null ? ' · o/u ' + ln.total : ''}</span>` : ''}` }); }
+  return items;
+}
+let tickPending = null;
+function renderTicker(force){
+  const el = document.getElementById('ticker'), trk = document.getElementById('tickTrack');
+  const on = S.settings.ticker !== false && S.games.size > 0;
+  el.style.display = on ? 'flex' : 'none'; document.body.classList.toggle('has-ticker', on); if (!on) return;
+  const items = tickerItems();
+  const one = items.length ? items.map(i => `<span class="ti ${i.al ? 'al' : ''}" data-fgid="${i.gid}">${i.html}</span>`).join('') : '<span class="ti">No games on this date</span>';
+  const html = one + one; // doubled for a seamless loop
+  if (trk.dataset.sig === one) return;
+  if (!trk.dataset.sig || force){ swapTicker(one, html); return; }
+  tickPending = [one, html]; // swap at the end of the current loop so the crawl doesn't jump
+}
+function swapTicker(one, html){
+  const trk = document.getElementById('tickTrack'); trk.dataset.sig = one; trk.innerHTML = html;
+  requestAnimationFrame(() => { const w = trk.scrollWidth/2; trk.style.setProperty('--dur', Math.max(25, w/70) + 's'); trk.style.animation = 'none'; void trk.offsetWidth; trk.style.animation = ''; });
+}
+document.getElementById('tickTrack').addEventListener('animationiteration', () => { if (tickPending){ const [a, b] = tickPending; tickPending = null; swapTicker(a, b); } });
+document.getElementById('tickClose').onclick = () => { S.settings.ticker = false; saveSettingsLS(); renderTicker(); };
+
 function renderStatus(){
   const h = S.health; const vis = visibleGames(), hidden = S.games.size - vis.length; const live = vis.filter(g => g.status === 'in' || g.status === 'half').length;
   const cnt = st => vis.filter(g => g.status === st).length;
   const d = (o, label) => `<span><span class="dot ${o.err && (!o.ok || o.errAt > o.ok) ? 'err' : o.ok ? 'ok' : 'idle'}"></span>${label}: ${o.ok ? ago(o.ok) : o.err ? 'error' : 'idle'}${o.err && o.errAt > (o.ok || 0) ? ' (' + esc(o.err) + ')' : ''}</span>`;
+  try { renderTicker(); } catch (e){ console.error(e); }
   document.getElementById('statusLine').innerHTML = `<span><b>${vis.length}</b> games${hidden ? ` <span class="na" style="font-style:normal">(+${hidden} non-D1 hidden)</span>` : ''} · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
     d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Sportsbook feed') + (S.oddsQuota ? `<span>Odds API credits left: <b>${S.oddsQuota.remaining ?? '?'}</b> · ${S.oddsQuota.matched ?? 0}/${S.oddsQuota.events ?? 0} games matched</span>` : '') : '<span>Sportsbook feed: not configured (DraftKings via ESPN only)</span>') +
     (S.srvStatus ? `<span><span class="dot ${Date.now() - Date.parse(S.srvStatus.lastRun) < 20*60e3 ? 'ok' : 'idle'}"></span>Collector: ${ago(Date.parse(S.srvStatus.lastRun))}</span>` : '') +
@@ -2455,13 +2509,13 @@ document.getElementById('rankedOnly').onchange = e => { S.filter.ranked = e.targ
 document.getElementById('hideNonD1').checked = S.hideNonD1;
 document.getElementById('hideNonD1').onchange = e => { S.hideNonD1 = e.target.checked; try { localStorage.setItem('hl.hideNonD1', S.hideNonD1 ? '1' : '0'); } catch {} renderBoard(); if (S.view === 'lead') renderLead(); };
 document.getElementById('search').oninput = e => { S.filter.q = e.target.value.trim(); renderBoard(); };
-document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('setHist').value = s.histRepo || ''; document.getElementById('settings').classList.add('open'); };
+document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('setTicker').checked = s.ticker !== false; document.getElementById('setHist').value = s.histRepo || ''; document.getElementById('settings').classList.add('open'); };
 document.getElementById('saveSettings').onclick = () => {
   const url = document.getElementById('setProxy').value.trim();
   if (/api[_-]?key=|apikey=/i.test(url)){ alertBox('That URL contains an API key. Keep keys on your backend proxy — paste only the proxy URL.'); return; }
   S.settings.refresh = clamp(+document.getElementById('setRefresh').value || 15, 5, 60); S.settings.sims = +document.getElementById('setSims').value || 1000;
-  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900); S.settings.book = document.getElementById('setBook').value; S.settings.histRepo = document.getElementById('setHist').value.trim();
-  saveSettingsLS(); initSrv(); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
+  S.settings.proxy = url; S.settings.proxyEvery = clamp(+document.getElementById('setProxyEvery').value || 120, 60, 900); S.settings.book = document.getElementById('setBook').value; S.settings.ticker = document.getElementById('setTicker').checked; S.settings.histRepo = document.getElementById('setHist').value.trim();
+  saveSettingsLS(); initSrv(); renderTicker(true); document.getElementById('settings').classList.remove('open'); schedule(); for (const g of S.games.values()) recompute(g); renderBoard();
 };
 function alertBox(msg){ const b = document.querySelector('#settings .box'); let n = b.querySelector('.notice'); if (!n){ n = document.createElement('div'); n.className = 'notice'; b.insertBefore(n, b.children[2]); } n.textContent = msg; }
 document.getElementById('exportData').onclick = async () => {
