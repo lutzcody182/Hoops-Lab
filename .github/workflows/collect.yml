@@ -66,7 +66,7 @@ jobs:
           const html = fs.readFileSync(env('INDEX_PATH') || 'index.html', 'utf8');
           const core = html.slice(html.indexOf('<script>') + 8, html.indexOf('/*@@CORE_END@@*/'));
           if (core.length < 1000) throw new Error('Could not find the dashboard code in index.html (missing @@CORE_END@@ marker?)');
-          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE, gameEvents, badBeats, clutchStats };')();
+          const H = new Function(core + '\nreturn { S, fetchScoreboard, fetchSummary, loadPrior, loadStandings, currentSeason, project, fetchProxyOdds, fetchH1Lines, currentLine, gameElapsed, estPoss, LEAGUE, gameEvents, badBeats, clutchStats, rotation, playerAdvanced, possSegments, nonGarbage, shotBinCounts, applyCalib, CAL, CAL_DEFAULTS, LUCK_SHARE };')();
           const { S } = H;
           S.settings.book = env('PREFERRED_BOOK') || 'fanduel';
           S.settings.sims = 1000;
@@ -87,14 +87,84 @@ jobs:
           const nextDay = d => { const [y, m, dd] = d.split('-').map(Number); const t = new Date(Date.UTC(y, m - 1, dd + 1)); return t.toISOString().slice(0, 10); };
 
           /* ---------- Season game log + opponent-adjusted ratings ---------- */
+          /* ---------- season player totals (box + on/off) for player impact ratings ---------- */
+          let PLAYERS = null;
+          function addPlayers(g, det){
+            if (!PLAYERS || !det.pH || !det.pA) return;
+            let rot = null; try { rot = H.rotation(det, Object.assign({}, g, { status: 'post' })); } catch {}
+            for (const [sd, P, tid] of [['h', det.pH, g.home.id], ['a', det.pA, g.away.id]]){
+              const adv = H.playerAdvanced(P) || {}, sp = v => v && String(v).includes('-') ? String(v).split('-').map(Number) : [0, 0];
+              const rmap = {}; if (rot && rot.available) for (const x of rot[sd]) rmap[x.id] = x;
+              const T = rot && rot.available ? rot.team[sd] : null;
+              for (const r of P.rows){ if (r.dnp || !r.id) continue; const v = r.v, mn = Number(v.MIN) || 0; if (!mn) continue;
+                const q = PLAYERS.players[r.id] = PLAYERS.players[r.id] || { n: r.name, t: tid, pos: r.pos, gp: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, to: 0, pf: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, gs: 0, on: { sec: 0, pf: 0, pa: 0, op: 0, dp: 0 }, tm: { sec: 0, pf: 0, pa: 0, op: 0, dp: 0 } };
+                q.n = r.name; q.t = tid; q.gp++; q.min += mn; q.pts += Number(v.PTS) || 0; q.reb += Number(v.REB) || 0; q.ast += Number(v.AST) || 0; q.stl += Number(v.STL) || 0; q.blk += Number(v.BLK) || 0; q.to += Number(v.TO) || 0; q.pf += Number(v.PF) || 0;
+                const [fm, fa] = sp(v.FG), [tm, ta] = sp(v['3PT']), [xm, xa] = sp(v.FT); q.fgm += fm; q.fga += fa; q.tpm += tm; q.tpa += ta; q.ftm += xm; q.fta += xa; q.gs += adv[r.id]?.gmsc || 0;
+                const x = rmap[String(r.id)]; if (x && T){ q.on.sec += x.secOn; q.on.pf += x.pf; q.on.pa += x.pa; q.on.op += x.o.poss; q.on.dp += x.d.poss; q.tm.sec += T.sec; q.tm.pf += T.pf; q.tm.pa += T.pa; q.tm.op += T.o.poss; q.tm.dp += T.d.poss; }
+              }
+            }
+          }
+          function computeImpacts(){
+            const list = Object.values(PLAYERS.players); let w = 0, s = 0;
+            for (const p of list) if (p.min >= 100){ s += p.gs/p.min*40*p.min; w += p.min; }
+            const lgGs40 = w ? s/w : 13;
+            for (const p of list){
+              p.mpg = p.gp ? +(p.min/p.gp).toFixed(1) : 0;
+              const box = p.min >= 20 ? (p.gs/p.min*40 - lgGs40)*0.6 : null;
+              let oo = null; const offOp = p.tm.op - p.on.op, offDp = p.tm.dp - p.on.dp;
+              if (p.on.op >= 40 && p.on.dp >= 40 && offOp >= 20 && offDp >= 20){
+                const on = (p.on.pf/p.on.op - p.on.pa/p.on.dp)*100, off = ((p.tm.pf - p.on.pf)/offOp - (p.tm.pa - p.on.pa)/offDp)*100;
+                const k = Math.min(p.on.op, offOp)/(Math.min(p.on.op, offOp) + 300); oo = (on - off)*k; p.onNet = +on.toFixed(1); p.offNet = +off.toFixed(1); }
+              p.box = box == null ? null : +box.toFixed(2); p.oo = oo == null ? null : +oo.toFixed(2);
+              p.imp = box == null ? null : +Math.max(-15, Math.min(15, oo == null ? box*0.8 : 0.5*box + 0.5*oo)).toFixed(2);
+            }
+            PLAYERS.lgGs40 = +lgGs40.toFixed(2);
+          }
+
+          /* ---------- availability (injury report) + schedule spots for upcoming games ---------- */
+          function availFor(det, teamId){
+            const inj = (det && det.injuries || []).find(t => t.team === teamId); if (!inj || !PLAYERS) return { delta: 0, out: [] };
+            let delta = 0; const out = [];
+            for (const it of inj.items || []){
+              const st = String(it.status || ''); const wgt = /out|suspend|inactive/i.test(st) ? 1 : /doubt/i.test(st) ? 0.8 : /question|day-to-day|game.?time/i.test(st) ? 0.4 : 0;
+              const p = PLAYERS.players[it.id] || Object.values(PLAYERS.players).find(q => q.t === teamId && q.n === it.name);
+              const d = p && p.imp != null && p.gp ? -p.imp*Math.min(1, p.mpg/40)*wgt : 0;
+              delta += d; out.push({ name: it.name, status: st, imp: p ? p.imp : null, mpg: p ? p.mpg : null, d: +d.toFixed(2) });
+            }
+            return { delta: +Math.max(-12, Math.min(12, delta)).toFixed(2), out };
+          }
+          function teamGamesBefore(teamId, day){ return LOG.games.filter(x => (x.h === teamId || x.a === teamId) && x.day < day).sort((a, b) => a.day < b.day ? -1 : 1); }
+          function daysBetween(a, b){ return Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z'))/86400e3); }
+          function spotInfo(teamId, day, isAway, neutral){
+            const prev = teamGamesBefore(teamId, day); const last = prev[prev.length - 1];
+            const rest = last ? daysBetween(last.day, day) - 1 : null;
+            let road = isAway && !neutral ? 1 : 0; if (road) for (let i = prev.length - 1; i >= 0; i--){ const x = prev[i]; if (x.a === teamId && !x.n) road++; else break; }
+            const g7 = prev.filter(x => daysBetween(x.day, day) <= 7).length;
+            return { rest, road, g7 };
+          }
+          const restBucket = d => d == null ? null : d <= -2 ? '≤-2' : d >= 2 ? '≥+2' : (d > 0 ? '+' : '') + d;
+          const roadBucket = r => r >= 3 ? '3+' : String(r);
+          function spotAdj(sh, sa){
+            const C = CALIB && CALIB.spots; if (!C) return 0; let adj = 0;
+            if (sh.rest != null && sa.rest != null){ const b = C.rest[restBucket(Math.max(-3, Math.min(3, sh.rest - sa.rest)))]; if (b) adj += b.eff*b.n/(b.n + 200); }
+            if (sa.road >= 1){ const b = C.road[roadBucket(sa.road)]; if (b) adj += b.eff*b.n/(b.n + 200); }
+            return +adj.toFixed(2);
+          }
+          let CALIB = null;
+
           function addLog(LOG, ids, g, det, day){
             if (ids.has(g.gid) || !det || !det.hasBox) return;
             const hp = H.estPoss(det.totH), ap = H.estPoss(det.totA);
             if (!hp || !ap || g.home.score == null || g.away.score == null) return;
             const box = t => ({ fga: t.fga, fgm: t.fgm, tpm: t.tpm, tpa: t.tpa, fta: t.fta, ftm: t.ftm, to: t.to, orb: t.orb, drb: t.drb });
             let cl = null; try { const c = H.clutchStats(det, g); if (c && c.any) cl = { hp: c.h.pts, ap: c.a.pts, hpos: c.h.poss, apos: c.a.poss, sec: Math.round(c.sec) }; } catch {}
+            let gt = null, tr = null, sq = null;
+            try { gt = H.nonGarbage(det, g); } catch {}
+            try { const ps = H.possSegments(det, g); if (ps) tr = ps; } catch {}
+            try { const sh = H.shotBinCounts(det.plays, g.home.id), sa = H.shotBinCounts(det.plays, g.away.id); if (Object.keys(sh).length || Object.keys(sa).length) sq = { h: sh, a: sa }; } catch {}
             LOG.games.push({ gid: g.gid, day, h: g.home.id, a: g.away.id, hs: g.home.score, as: g.away.score, hp: +hp.toFixed(1), ap: +ap.toFixed(1), n: g.neutral ? 1 : 0, ot: g.period > 2 ? g.period - 2 : 0,
-              h1: [g.home.lines[0] ?? null, g.away.lines[0] ?? null], h2: [g.home.lines[1] ?? null, g.away.lines[1] ?? null], bh: box(det.totH), ba: box(det.totA), cl });
+              h1: [g.home.lines[0] ?? null, g.away.lines[0] ?? null], h2: [g.home.lines[1] ?? null, g.away.lines[1] ?? null], bh: box(det.totH), ba: box(det.totA), cl, gt, tr, sq });
+            try { addPlayers(g, det); } catch (e){ status.errors.push('players ' + g.gid + ': ' + e.message); }
             ids.add(g.gid);
           }
           async function backfillLog(LOG, ids){
@@ -114,8 +184,11 @@ jobs:
           function computeRatings(LOG, asOf = null, light = false){
             const d1 = new Set(S.conf.keys());
             const games = LOG.games.filter(x => (!d1.size || (d1.has(x.h) && d1.has(x.a))) && x.hp && x.ap && (!asOf || x.day <= asOf));
-            const possOf = x => (x.hp + x.ap) / 2;
-            let pts = 0, ps = 0; for (const x of games){ pts += x.hs + x.as; ps += 2 * possOf(x); }
+            // garbage-time filter: use only possessions before the game was decided (when play-by-play allows)
+            const useGT = x => x.gt && x.gt.hpos >= 20 && x.gt.apos >= 20;
+            for (const x of games){ if (useGT(x)){ x._hs = x.gt.hs; x._as = x.gt.as; x._hp = x.gt.hpos; x._ap = x.gt.apos; } else { x._hs = x.hs; x._as = x.as; x._hp = x.hp; x._ap = x.ap; } }
+            const possOf = x => (x._hp + x._ap) / 2;
+            let pts = 0, ps = 0; for (const x of games){ pts += x._hs + x._as; ps += 2 * possOf(x); }
             const lgEff = games.length > 40 ? pts / ps * 100 : H.LEAGUE.eff;
             const lgT = games.length > 40 ? mean(games.map(x => possOf(x) * 40 / (40 + 5 * x.ot))) : H.LEAGUE.pace;
             const teams = new Set([...d1, ...games.flatMap(x => [x.h, x.a])]);
@@ -134,7 +207,7 @@ jobs:
                 for (const x of byTeam[id] || []){
                   const home = x.h === id, opp = home ? x.a : x.h, op = R[opp] || { o: lgEff, d: lgEff, t: lgT };
                   const mins = (40 + 5 * x.ot) / 40, poss = possOf(x);
-                  const ortg = (home ? x.hs : x.as) / poss * 100, drtg = (home ? x.as : x.hs) / poss * 100;
+                  const ortg = (home ? x._hs : x._as) / poss * 100, drtg = (home ? x._as : x._hs) / poss * 100;
                   const adj = x.n ? 0 : (home ? hcaEff : -hcaEff);
                   const age = (nowT - Date.parse(x.day + 'T12:00:00Z')) / 86400e3, w = Math.pow(0.5, Math.max(0, age) / 45);
                   O += w * (ortg - adj) * lgEff / op.d; D += w * (drtg + adj) * lgEff / op.o; T += w * (poss / mins) * lgT / op.t; W += w;
@@ -158,6 +231,28 @@ jobs:
                   add(q.o, mb, ob); add(q.d, ob, mb); }
               }
             }
+            // opponent-adjusted Four Factors (additive adjustment for opponent strength in each factor, iterated)
+            const FK = ['efg', 'tov', 'orb', 'ftr'];
+            const gameFF = (mb, ob, poss) => mb && ob && mb.fga ? { efg: (mb.fgm + 0.5*mb.tpm)/mb.fga, tov: poss ? mb.to/poss : null, orb: (mb.orb + ob.drb) ? mb.orb/(mb.orb + ob.drb) : null, ftr: mb.fta/mb.fga } : null;
+            const ffGames = []; for (const x of games){ const ph = gameFF(x.bh, x.ba, x.hp), pa = gameFF(x.ba, x.bh, x.ap); if (ph && pa) ffGames.push({ h: x.h, a: x.a, ph, pa }); }
+            const lgF = {}; for (const k of FK){ const v = ffGames.flatMap(f => [f.ph[k], f.pa[k]]).filter(v => v != null); lgF[k] = v.length ? mean(v) : null; }
+            let AO = {}, AD = {}; for (const id of teams){ AO[id] = Object.assign({}, lgF); AD[id] = Object.assign({}, lgF); }
+            const ffBy = {}; for (const f of ffGames){ (ffBy[f.h] = ffBy[f.h] || []).push({ me: f.ph, op: f.pa, opp: f.a }); (ffBy[f.a] = ffBy[f.a] || []).push({ me: f.pa, op: f.ph, opp: f.h }); }
+            for (let it = 0; it < 12; it++){ const NO = {}, ND = {};
+              for (const id of teams){ NO[id] = {}; ND[id] = {}; for (const k of FK){ let so = 0, sd = 0, n = 0;
+                for (const e of ffBy[id] || []){ if (e.me[k] == null || e.op[k] == null || lgF[k] == null) continue; so += e.me[k] - (AD[e.opp][k] - lgF[k]); sd += e.op[k] - (AO[e.opp][k] - lgF[k]); n++; }
+                NO[id][k] = n ? (so + lgF[k]*2)/(n + 2) : lgF[k]; ND[id][k] = n ? (sd + lgF[k]*2)/(n + 2) : lgF[k]; } }
+              AO = NO; AD = ND; }
+            // recent form: last 8 D1 games, opponent-adjusted with the season ratings
+            const form = {}; for (const id of teams){ const gs = (byTeam[id] || []).slice().sort((a, b) => a.day < b.day ? 1 : -1).slice(0, 8); if (gs.length < 3) continue;
+              let O = 0, D = 0; for (const x of gs){ const home = x.h === id, opp = home ? x.a : x.h, op = R[opp]; if (!op) continue; const poss = possOf(x), adj = x.n ? 0 : (home ? hcaEff : -hcaEff);
+                O += ((home ? x._hs : x._as)/poss*100 - adj)*lgEff/op.d; D += ((home ? x._as : x._hs)/poss*100 + adj)*lgEff/op.o; }
+              form[id] = { o: O/gs.length, d: D/gs.length, gp: gs.length }; }
+            const formRank = Object.keys(form).sort((a, b) => (form[b].o - form[b].d) - (form[a].o - form[a].d)); formRank.forEach((id, i) => form[id].rk = i + 1);
+            // transition vs half-court season profile
+            const sty = {}; const S0 = () => ({ poss: 0, tp: 0, tpts: 0, hp: 0, hpts: 0, scp: 0, potp: 0, g: 0 });
+            for (const x of games){ if (!x.tr) continue; for (const [me, sdM, sdO] of [[x.h, 'h', 'a'], [x.a, 'a', 'h']]){ const q = sty[me] = sty[me] || { o: S0(), d: S0() };
+              for (const k in x.tr[sdM]) q.o[k] += x.tr[sdM][k]; for (const k in x.tr[sdO]) q.d[k] += x.tr[sdO][k]; q.o.g++; q.d.g++; } }
             const ff = t => t.fga ? { efg: (t.fgm + 0.5*t.tpm)/t.fga, tov: t.poss ? t.to/t.poss : null, orb: (t.orb + t.oppDrb) ? t.orb/(t.orb + t.oppDrb) : null, ftr: t.fta/t.fga } : null;
             const out = {}; const ranked = [...teams].filter(id => d1.has(id) || !d1.size).sort((a, b) => (R[b].o - R[b].d) - (R[a].o - R[a].d));
             const rd = (v, k = 3) => v == null || !isFinite(v) ? null : +v.toFixed(k);
@@ -168,11 +263,18 @@ jobs:
                 if (q.cl.g) out[id].cl = { g: q.cl.g, w: q.cl.w, l: q.cl.l, pf: q.cl.pf, pa: q.cl.pa, o: q.cl.pos ? rd(q.cl.pf / q.cl.pos * 100, 1) : null, d: q.cl.opos ? rd(q.cl.pa / q.cl.opos * 100, 1) : null, pos: q.cl.pos };
                 if (q.h1.length) out[id].half = { g: q.h1.length, h1: rd(mean(q.h1), 2), h2: rd(mean(q.h2), 2), adj: rd(mean(q.h2) - mean(q.h1), 2) };
                 const fo = ff(q.o), fd = ff(q.d); if (fo && fd) out[id].ff = { o: { efg: rd(fo.efg), tov: rd(fo.tov), orb: rd(fo.orb), ftr: rd(fo.ftr) }, d: { efg: rd(fd.efg), tov: rd(fd.tov), orb: rd(fd.orb), ftr: rd(fd.ftr) } };
-              } });
+                if (fo && fd && ffBy[id]) out[id].ffa = { o: Object.fromEntries(FK.map(k => [k, rd(AO[id][k])])), d: Object.fromEntries(FK.map(k => [k, rd(AD[id][k])])) };
+              }
+              if (form[id]) out[id].form = { o: rd(form[id].o, 1), d: rd(form[id].d, 1), net: rd(form[id].o - form[id].d, 1), rk: form[id].rk, gp: form[id].gp };
+              const st = sty[id]; if (st && st.o.poss >= 30){ const r2 = (a, b) => b ? rd(a/b, 3) : null;
+                out[id].style = { trPct: r2(st.o.tp, st.o.poss), trPPP: r2(st.o.tpts, st.o.tp), hcPPP: r2(st.o.hpts, st.o.hp), dTrPct: r2(st.d.tp, st.d.poss), dTrPPP: r2(st.d.tpts, st.d.tp), dHcPPP: r2(st.d.hpts, st.d.hp),
+                  scpG: rd(st.o.scp/st.o.g, 1), potpG: rd(st.o.potp/st.o.g, 1), dScpG: rd(st.d.scp/st.d.g, 1), dPotpG: rd(st.d.potp/st.d.g, 1), g: st.o.g }; }
+            });
             // ranks for SOS
             const sosR = ranked.filter(id => out[id].sos != null).sort((a, b) => out[b].sos - out[a].sos); sosR.forEach((id, i) => out[id].sosRk = i + 1);
             return { updated: Date.now(), season: LOG.season, games: games.length, lg: { eff: +lgEff.toFixed(2), t: +lgT.toFixed(2) }, teams: out,
-              method: 'Opponent- and home-court-adjusted offense/defense (points per 100 possessions) and tempo, iterated over every D1-vs-D1 game; last season regressed 35% to average counts as 5 games; recent games weighted more (45-day half-life).' };
+              lgFF: Object.fromEntries(FK.map(k => [k, rd(lgF[k])])), gtGames: games.filter(useGT).length,
+              method: 'Opponent- and home-court-adjusted offense/defense (points per 100 possessions) and tempo, iterated over every D1-vs-D1 game; garbage time (decided-game minutes) excluded when play-by-play allows; last season regressed 35% to average counts as 5 games; recent games weighted more (45-day half-life).' };
           }
 
           async function runDay(day){
@@ -231,6 +333,19 @@ jobs:
               }
             }
             for (const g of list){ const m = D.games[g.gid]; if (m && m.h1Lines) S.h1Lines.set(g.gid, m.h1Lines); }
+            // Injury report + schedule spot for games starting within ~4 hours (refreshed each run until tip)
+            S.gameCtx = S.gameCtx || new Map();
+            const upcoming = list.filter(g => g.status === 'pre' && Date.parse(g.date) - now < 4*3600e3);
+            await Promise.all(upcoming.map(g => H.fetchSummary(g.gid).catch(() => null)));
+            for (const g of list){
+              const m = D.games[g.gid] = D.games[g.gid] || {};
+              if (g.status === 'pre'){
+                const sh = spotInfo(g.home.id, day, false, g.neutral), sa = spotInfo(g.away.id, day, true, g.neutral);
+                m.spot = { h: sh, a: sa, adj: g.neutral ? spotAdj(sh, sa) : spotAdj(sh, sa) };
+                const det = S.details.get(g.gid); if (det && det.injuries) m.avail = { h: availFor(det, g.home.id), a: availFor(det, g.away.id), at: now };
+              }
+              if (m.spot || m.avail) S.gameCtx.set(g.gid, { spot: m.spot, avail: m.avail });
+            }
 
             for (const g of list){
               const meta = D.games[g.gid] = Object.assign(D.games[g.gid] || {}, { gid: g.gid, day, date: g.date, home: g.home.name, away: g.away.name, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, homeId: g.home.id, awayId: g.away.id,
@@ -263,6 +378,7 @@ jobs:
               D.snaps.push({ gid: g.gid, ts: now, el: p.el, status: g.status, h: g.home.score, a: g.away.score, projH: p.projH, projA: p.projA, projT: p.projT, projM: p.projM,
                 pHome: p.pHome, pOver: p.pOver ?? null, pCoverH: p.pCoverH ?? null, lineTotal: p.line?.total ?? null, lineSpread: p.line?.homeSpread ?? null, book: p.line?.book ?? null,
                 projPoss: p.projPossH != null ? (p.projPossH + p.projPossA) / 2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: 'collector',
+                ...(g.status === 'pre' && p.pre && p.pre.market && p.pre.ratings ? { preM: [+p.pre.market.h.toFixed(2), +p.pre.market.a.toFixed(2)], preR: [+p.pre.ratings.h.toFixed(2), +p.pre.ratings.a.toFixed(2)] } : {}),
                 ...(p.h1 && !p.h1.final ? { projH1T: p.h1.projT, projH1M: p.h1.projM, lineH1Total: p.h1.line?.total ?? null, lineH1Spread: p.h1.line?.homeSpread ?? null } : {}) });
               status.snaps++;
               await checkAlerts(D, g, p);
@@ -277,6 +393,61 @@ jobs:
             writeJ(file, D);
           }
 
+          /* ---------- self-calibration: re-fit model settings from logged results ---------- */
+          function calibrate(ratings){
+            const D1 = new Set(S.conf.keys());
+            const games = LOG.games.filter(x => (!D1.size || (D1.has(x.h) && D1.has(x.a))) && x.hp && x.ap);
+            const C = { updated: Date.now(), games: games.length };
+            // 1) first-half share of regulation scoring
+            const reg = games.filter(x => !x.ot && x.h1 && x.h2 && x.h1[0] != null && x.h2[0] != null);
+            if (reg.length){ const h1 = reg.reduce((a, x) => a + x.h1[0] + x.h1[1], 0), all = reg.reduce((a, x) => a + x.h1[0] + x.h1[1] + x.h2[0] + x.h2[1], 0);
+              const v = Math.max(0.9, Math.min(1.0, 2*h1/all)); C.h1 = { value: +v.toFixed(4), n: reg.length, use: reg.length >= 300, def: H.CAL_DEFAULTS.h1, share: +(h1/all).toFixed(4) }; }
+            // 2) luck shares: fraction of game-to-game shooting variation that is pure binomial noise
+            const tg = {}; for (const x of games){ for (const [id, b] of [[x.h, x.bh], [x.a, x.ba]]){ if (!b || b.fga == null) continue; (tg[id] = tg[id] || []).push(b); } }
+            const share = (att, mk) => { let noise = 0, obs = 0, n = 0;
+              for (const arr of Object.values(tg)){ if (arr.length < 5) continue; const A = arr.reduce((s, b) => s + att(b), 0), M = arr.reduce((s, b) => s + mk(b), 0); if (!A) continue; const p = M/A;
+                for (const b of arr){ const a = att(b); if (a < 4) continue; const d = mk(b)/a - p; obs += d*d; noise += p*(1 - p)/a; n++; } }
+              return n ? { v: Math.max(0.4, Math.min(0.97, noise/obs)), n } : null; };
+            const s3 = share(b => b.tpa, b => b.tpm), sF = share(b => b.fta, b => b.ftm), s2 = share(b => b.fga - b.tpa, b => b.fgm - b.tpm);
+            if (s3 && sF && s2){ const n = Math.min(s3.n, sF.n, s2.n); C.luck = { value: { three: +s3.v.toFixed(3), ft: +sF.v.toFixed(3), two: +s2.v.toFixed(3) }, n, use: n >= 600, def: H.CAL_DEFAULTS.luck }; }
+            // 3) home-court advantage + 4) schedule spots, from residuals vs neutral-court rating predictions
+            const T = ratings.teams, lg = ratings.lg; const res = [];
+            for (const x of games){ const rh = T[x.h], ra = T[x.a]; if (!rh || !ra) continue; const poss = rh.t*ra.t/lg.t;
+              const pred = poss*(rh.o*ra.d - ra.o*rh.d)/(lg.eff*100); res.push({ x, r: (x.hs - x.as) - pred }); }
+            const home = res.filter(e => !e.x.n);
+            if (home.length){ const v = mean(home.map(e => e.r)); C.hca = { value: +Math.max(1.5, Math.min(4.5, v)).toFixed(2), raw: +v.toFixed(2), n: home.length, use: home.length >= 250, def: H.CAL_DEFAULTS.hca }; }
+            const hcaV = C.hca ? C.hca.value : H.LEAGUE.hcaPts;
+            const spots = { rest: {}, road: {} };
+            for (const e of res){ const r = e.r - (e.x.n ? 0 : hcaV);
+              const sh = spotInfo(e.x.h, e.x.day, false, !!e.x.n), sa = spotInfo(e.x.a, e.x.day, true, !!e.x.n);
+              if (sh.rest != null && sa.rest != null){ const b = restBucket(Math.max(-3, Math.min(3, sh.rest - sa.rest))); const q = spots.rest[b] = spots.rest[b] || { n: 0, s: 0 }; q.n++; q.s += r; }
+              if (!e.x.n){ const b = roadBucket(sa.road); const q = spots.road[b] = spots.road[b] || { n: 0, s: 0 }; q.n++; q.s += r; } }
+            for (const t of ['rest', 'road']) for (const k in spots[t]){ const q = spots[t][k]; q.eff = +(q.s/q.n).toFixed(2); delete q.s; }
+            C.spots = spots;
+            // 5) market vs ratings blend weight, from pregame projections vs results
+            const pr = perf.filter(r => r.cps && r.cps.Pregame && r.cps.Pregame.preM && r.cps.Pregame.preR);
+            if (pr.length){ let num = 0, den = 0; for (const r of pr){ const m = r.cps.Pregame.preM[0] - r.cps.Pregame.preM[1], q = r.cps.Pregame.preR[0] - r.cps.Pregame.preR[1], y = r.h - r.a; num += (y - q)*(m - q); den += (m - q)**2; }
+              const w = den ? Math.max(0.5, Math.min(0.95, num/den)) : H.CAL_DEFAULTS.mktW; C.mktW = { value: +w.toFixed(3), n: pr.length, use: pr.length >= 150, def: H.CAL_DEFAULTS.mktW }; }
+            return C;
+          }
+
+          /* ---------- closing line value: did the line move toward the model's side? ---------- */
+          function clvFor(D, meta){
+            const pre = D.snaps.filter(s => s.gid === meta.gid && s.status === 'pre' && (s.lineSpread != null || s.lineTotal != null)).sort((a, b) => a.ts - b.ts);
+            if (!pre.length) return null; const pick = pre[0], book = pick.book;
+            const odds = D.odds.filter(o => o.gid === meta.gid && o.status === 'pre' && (!book || String(o.src).endsWith('|' + book))).sort((a, b) => a.ts - b.ts);
+            const closeO = odds[odds.length - 1], lastSnap = pre[pre.length - 1];
+            const Lc = closeO && closeO.homeSpread != null ? closeO.homeSpread : lastSnap.lineSpread, Tc = closeO && closeO.total != null ? closeO.total : lastSnap.lineTotal;
+            const out = { book: book || '' }, M = meta.h - meta.a, T = meta.h + meta.a;
+            if (pick.lineSpread != null && pick.projM != null && Lc != null){ const Lp = pick.lineSpread, e = pick.projM + Lp, side = e > 0 ? 'h' : 'a';
+              const clv = side === 'h' ? Lp - Lc : Lc - Lp, cov = M + Lp; const res = cov === 0 ? 'P' : (cov > 0) === (side === 'h') ? 'W' : 'L';
+              out.sp = { side, edge: +Math.abs(e).toFixed(2), lp: Lp, lc: Lc, clv: +clv.toFixed(2), res }; }
+            if (pick.lineTotal != null && pick.projT != null && Tc != null){ const Tp = pick.lineTotal, e = pick.projT - Tp, side = e > 0 ? 'o' : 'u';
+              const clv = side === 'o' ? Tc - Tp : Tp - Tc; const res = T === Tp ? 'P' : (T > Tp) === (side === 'o') ? 'W' : 'L';
+              out.to = { side, edge: +Math.abs(e).toFixed(2), lp: Tp, lc: Tc, clv: +clv.toFixed(2), res }; }
+            return out.sp || out.to ? out : null;
+          }
+
           function addPerf(D, meta, g){
             if (perfIds.has(meta.gid) || meta.h == null || meta.a == null) return;
             const arr = D.snaps.filter(s => s.gid === meta.gid).sort((a, b) => a.ts - b.ts);
@@ -287,10 +458,10 @@ jobs:
               if (el === 0) s = arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null);
               else { for (const x of arr) if (x.status !== 'pre' && x.el <= el + 1 && (!s || x.el >= s.el)) s = x; if (s && s.el < el - 240) s = null; }
               if (s) cps[name] = { el: s.el, h: s.h, a: s.a, projT: s.projT, projM: s.projM, pHome: s.pHome, naiveT: s.naiveT, lineTotal: s.lineTotal, lineSpread: s.lineSpread, projPoss: s.projPoss,
-                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}) };
+                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}), ...(s.preM ? { preM: s.preM, preR: s.preR } : {}) };
             }
             perf.push({ gid: meta.gid, day: meta.day, home: meta.home, away: meta.away, conf: meta.conf, h: meta.h, a: meta.a, finalPoss: meta.finalPoss, ot: !!meta.ot, pregameLine: meta.pregameLine || null, cps, n: arr.length,
-              h1H: g && g.home.lines.length ? g.home.lines[0] : null, h1A: g && g.away.lines.length ? g.away.lines[0] : null });
+              h1H: g && g.home.lines.length ? g.home.lines[0] : null, h1A: g && g.away.lines.length ? g.away.lines[0] : null, clv: clvFor(D, meta) });
             perfIds.add(meta.gid);
           }
 
@@ -333,7 +504,10 @@ jobs:
           (async () => {
             S.date = today;
             const season = H.currentSeason();
-            LOG = readJ('log.json', null); if (!LOG || LOG.season !== season || LOG.v !== 2) LOG = { season, v: 2, done: {}, games: [] };
+            LOG = readJ('log.json', null); let fresh = false; if (!LOG || LOG.season !== season || LOG.v !== 3){ LOG = { season, v: 3, done: {}, games: [] }; fresh = true; }
+            PLAYERS = fresh ? null : readJ('players.json', null); if (!PLAYERS || PLAYERS.season !== season) PLAYERS = { season, players: {} };
+            CALIB = readJ('calib.json', null); if (CALIB) H.applyCalib(CALIB);
+            S.shotModel = readJ('shotmodel.json', null);
             LOG_IDS = new Set(LOG.games.map(x => x.gid));
             const st = await H.loadStandings(season); if (st) for (const [id, c] of Object.entries(st.conf)) S.conf.set(id, c);
             await backfillLog(LOG, LOG_IDS);
@@ -341,6 +515,11 @@ jobs:
             // make sure last-season stats are cached for the rating priors (spread over runs)
             for (const id of S.conf.keys()){ if (priorBudget <= 0) break; if (!cache[`hl.ts.${id}.${season - 1}`]){ priorBudget--; await H.loadPrior(id); } }
             const ratings = computeRatings(LOG); S.ratings = ratings; status.ratedGames = ratings.games;
+            computeImpacts();
+            // shot model: D1 make rates by zone from every logged shot location
+            const bins = {}; for (const x of LOG.games) if (x.sq) for (const sd of ['h', 'a']) for (const [b, [a, m]] of Object.entries(x.sq[sd] || {})){ bins[b] = bins[b] || { a: 0, m: 0 }; bins[b].a += a; bins[b].m += m; }
+            S.shotModel = { updated: Date.now(), bins }; writeJ('shotmodel.json', S.shotModel);
+            CALIB = calibrate(ratings); H.applyCalib(CALIB); writeJ('calib.json', CALIB);
             // Daily rating history (net, rank, off, def, tempo per team) for trend lines; backfills missing days from the game log
             const HIST = readJ('ratings-history.json', null);
             const hist = HIST && HIST.season === season ? HIST : { season, days: {} };
@@ -356,6 +535,7 @@ jobs:
             writeJ('ratings.json', ratings);
             for (const d of daysToRun) await runDay(d);
             writeJ('log.json', LOG); writeJ('state.json', STATE);
+            computeImpacts(); PLAYERS.updated = Date.now(); writeJ('players.json', PLAYERS);
             writeJ('perf.json', perf);
             const idx = new Set(readJ('days/index.json', [])); daysToRun.forEach(d => idx.add(d)); writeJ('days/index.json', [...idx].sort());
             writeJ('cache.json', cache);
