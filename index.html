@@ -170,6 +170,7 @@ tr.dnp td{color:var(--text-muted)}
     </select>
     <div class="chips" id="viewChips"><button class="btn sm on" data-cv="compact">Compact cards</button><button class="btn sm" data-cv="stats">Stats cards</button></div>
     <label style="font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="rankedOnly"> Ranked only</label>
+    <label style="font-size:12px;color:var(--text-secondary)" title="Hide games where one team isn't in Division I (e.g. Division II, NAIA)"><input type="checkbox" id="hideNonD1"> Hide non-D1 games</label>
     <input type="text" id="search" placeholder="Search team…" style="width:150px">
   </div>
   <div class="status-line" id="statusLine"></div>
@@ -228,6 +229,7 @@ const S = {
   health: { scoreboard: {}, summary: {}, odds: {}, proxy: {}, priors: {} },
   extraOdds: new Map(), firstSeen: new Map(), oddsQuota: null, oddsEventId: new Map(), h1Lines: new Map(), ratings: null, // gid -> [{book, ...}]
   hideFeed: (() => { try { return !!localStorage.getItem('hl.hideFeed'); } catch { return false; } })(), feedSrv: [],
+  hideNonD1: (() => { try { return localStorage.getItem('hl.hideNonD1') !== '0'; } catch { return true; } })(),
   settings: loadSettings(), cardView: (() => { try { return localStorage.getItem('hl.cardView') || 'compact'; } catch { return 'compact'; } })(),
   lastSnap: new Map(), oddsSeen: new Map(),
 };
@@ -1267,8 +1269,12 @@ function card(g){
 }
 function shortBook(b){ return String(b || '').replace(/sportsbook/i, '').trim(); }
 
+/* A team counts as D1 if it appears in ESPN's D1 conference standings. If that list hasn't loaded, nothing is hidden. */
+function isD1(id){ return S.conf.size < 200 || S.conf.has(String(id)); }
+function d1Game(g){ return !S.hideNonD1 || (isD1(g.home.id) && isD1(g.away.id)); }
+function visibleGames(){ return [...S.games.values()].filter(d1Game); }
 function filtered(){
-  const f = S.filter; let arr = [...S.games.values()];
+  const f = S.filter; let arr = visibleGames();
   if (f.st !== 'all') arr = arr.filter(g => f.st === 'pre' ? (g.status === 'pre' || g.status === 'other') : g.status === f.st);
   if (f.conf) arr = arr.filter(g => confOf(g.home) === f.conf || confOf(g.away) === f.conf);
   if (f.ranked) arr = arr.filter(g => g.home.rank || g.away.rank);
@@ -1288,11 +1294,11 @@ function allFeed(){
   const map = new Map();
   for (const e of S.feedSrv || []) map.set(e.key, e);
   for (const g of S.games.values()){ const det = S.details.get(g.gid); for (const e of [...gameEvents(g, det), ...badBeats(g, det)]) map.set(e.key, e); }
-  return [...map.values()].filter(e => S.games.has(e.gid));
+  return [...map.values()].filter(e => S.games.has(e.gid) && d1Game(S.games.get(e.gid)));
 }
 function feedHtml(){
   if (S.hideFeed) return `<div style="margin-bottom:8px"><button class="btn sm" id="toggleFeed">Show feed (upsets · comebacks · bad beats)</button></div>`;
-  const ups = [...S.games.values()].map(g => ({ g, u: upsetInfo(g) })).filter(x => x.u).sort((a, b) => (a.u.level === 'upset') - (b.u.level === 'upset') || b.u.pts - a.u.pts);
+  const ups = visibleGames().map(g => ({ g, u: upsetInfo(g) })).filter(x => x.u).sort((a, b) => (a.u.level === 'upset') - (b.u.level === 'upset') || b.u.pts - a.u.pts);
   const F = allFeed(); const st = gid => S.games.get(gid)?.status;
   const order = e => (st(e.gid) === 'in' || st(e.gid) === 'half' ? 0 : 1);
   const finishes = F.filter(e => e.type !== 'bad').sort((a, b) => order(a) - order(b) || ({ buzzer: 0, winner: 1, comeback: 2, late: 3, ot: 4 }[a.type] - { buzzer: 0, winner: 1, comeback: 2, late: 3, ot: 4 }[b.type]));
@@ -1320,10 +1326,10 @@ function renderBoard(){
   renderStatus();
 }
 function renderStatus(){
-  const h = S.health; const live = [...S.games.values()].filter(g => g.status === 'in' || g.status === 'half').length;
-  const cnt = st => [...S.games.values()].filter(g => g.status === st).length;
+  const h = S.health; const vis = visibleGames(), hidden = S.games.size - vis.length; const live = vis.filter(g => g.status === 'in' || g.status === 'half').length;
+  const cnt = st => vis.filter(g => g.status === st).length;
   const d = (o, label) => `<span><span class="dot ${o.err && (!o.ok || o.errAt > o.ok) ? 'err' : o.ok ? 'ok' : 'idle'}"></span>${label}: ${o.ok ? ago(o.ok) : o.err ? 'error' : 'idle'}${o.err && o.errAt > (o.ok || 0) ? ' (' + esc(o.err) + ')' : ''}</span>`;
-  document.getElementById('statusLine').innerHTML = `<span><b>${S.games.size}</b> games · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
+  document.getElementById('statusLine').innerHTML = `<span><b>${vis.length}</b> games${hidden ? ` <span class="na" style="font-style:normal">(+${hidden} non-D1 hidden)</span>` : ''} · <b class="${live ? 'bad' : ''}">${live}</b> live · ${cnt('pre')} upcoming · ${cnt('post')} final</span>` +
     d(h.scoreboard, 'Scores (ESPN)') + d(h.summary, 'Box/PBP (ESPN)') + d(h.priors, 'Team history') + (S.settings.proxy ? d(h.proxy, 'Sportsbook feed') + (S.oddsQuota ? `<span>Odds API credits left: <b>${S.oddsQuota.remaining ?? '?'}</b> · ${S.oddsQuota.matched ?? 0}/${S.oddsQuota.events ?? 0} games matched</span>` : '') : '<span>Sportsbook feed: not configured (DraftKings via ESPN only)</span>') +
     (S.srvStatus ? `<span><span class="dot ${Date.now() - Date.parse(S.srvStatus.lastRun) < 20*60e3 ? 'ok' : 'idle'}"></span>Collector: ${ago(Date.parse(S.srvStatus.lastRun))}</span>` : '') +
     `<span><span class="model">dotted</span> / <span class="tag">MODEL</span> = model estimate</span><span>Auto-refresh: ${anyLive() ? S.settings.refresh + 's (live)' : S.date === todayStr() ? '60s' : 'off (past/future date)'}</span>`;
@@ -2156,7 +2162,7 @@ async function loadAllForDate(){
 }
 async function renderLead(){
   const m = document.getElementById('main');
-  const games = [...S.games.values()].filter(g => g.status === 'post' || g.status === 'in' || g.status === 'half');
+  const games = visibleGames().filter(g => g.status === 'post' || g.status === 'in' || g.status === 'half');
   const withDet = games.filter(g => S.details.get(g.gid)?.hasBox);
   await Promise.all(withDet.flatMap(g => [loadPrior(g.home.id), loadPrior(g.away.id)]));
   const ab = (g, sd) => esc((sd === 'h' ? g.home : g.away).abbr);
@@ -2359,6 +2365,8 @@ document.getElementById('refreshBtn').onclick = async () => { await refreshScore
 document.getElementById('confSel').onchange = e => { S.filter.conf = e.target.value; renderBoard(); };
 document.getElementById('sortSel').onchange = e => { S.filter.sort = e.target.value; renderBoard(); };
 document.getElementById('rankedOnly').onchange = e => { S.filter.ranked = e.target.checked; renderBoard(); };
+document.getElementById('hideNonD1').checked = S.hideNonD1;
+document.getElementById('hideNonD1').onchange = e => { S.hideNonD1 = e.target.checked; try { localStorage.setItem('hl.hideNonD1', S.hideNonD1 ? '1' : '0'); } catch {} renderBoard(); if (S.view === 'lead') renderLead(); };
 document.getElementById('search').oninput = e => { S.filter.q = e.target.value.trim(); renderBoard(); };
 document.getElementById('settingsBtn').onclick = () => { const s = S.settings; document.getElementById('setRefresh').value = s.refresh; document.getElementById('setSims').value = String(s.sims); document.getElementById('setProxy').value = s.proxy; document.getElementById('setProxyEvery').value = s.proxyEvery; document.getElementById('setBook').value = s.book || 'fanduel'; document.getElementById('setHist').value = s.histRepo || ''; document.getElementById('settings').classList.add('open'); };
 document.getElementById('saveSettings').onclick = () => {
