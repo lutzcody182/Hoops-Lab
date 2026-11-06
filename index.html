@@ -231,6 +231,14 @@ const LUCK_SHARE = { three: 0.80, ft: 0.90, two: 0.35 };
 // Shot-type baseline make rates (approximate D1 averages) for the play-by-play shot-quality estimate.
 // First halves score a bit below half of the game total (slower starts, fewer free throws before the bonus). Calibration assumption, checked on the Model performance page.
 const H1_PPP_FACTOR = 0.955;
+// Model settings. Defaults below; the background collector re-fits them from real results (calib.json) once enough games are logged.
+const CAL = { mktW: 0.75, h1: H1_PPP_FACTOR, src: 'defaults', data: null };
+const CAL_DEFAULTS = { mktW: 0.75, h1: H1_PPP_FACTOR, hca: 3.0, luck: { three: 0.80, ft: 0.90, two: 0.35 } };
+function applyCalib(c){
+  if (!c) return; CAL.data = c; CAL.src = 'calibrated';
+  if (c.mktW && c.mktW.use) CAL.mktW = c.mktW.value; if (c.h1 && c.h1.use) CAL.h1 = c.h1.value; if (c.hca && c.hca.use) LEAGUE.hcaPts = c.hca.value;
+  if (c.luck && c.luck.use){ for (const k of ['three', 'ft', 'two']) if (c.luck.value[k] != null) LUCK_SHARE[k] = c.luck.value[k]; }
+}
 const SHOT_BASE = { dunk: 0.88, layup: 0.57, tip: 0.50, hook: 0.45, jumper: 0.36, two: 0.48, three: 0.34 };
 
 const S = {
@@ -331,13 +339,18 @@ async function loadServerDay(day){ const d = await srvGet(`days/${day}.json`, 60
 /* Ratings + first-half lines saved by the collector */
 async function syncServer(){
   if (!SRV.base) return;
-  const [rt, D] = await Promise.all([srvGet('ratings.json', 30*60e3), loadServerDay(S.date)]);
+  const [rt, D, cb, sm] = await Promise.all([srvGet('ratings.json', 30*60e3), loadServerDay(S.date), srvGet('calib.json', 30*60e3), srvGet('shotmodel.json', 6*3600e3)]);
   let changed = false;
+  if (cb && (!CAL.data || CAL.data.updated !== cb.updated)){ applyCalib(cb); changed = true; }
+  if (sm && sm.bins && (!S.shotModel || S.shotModel.updated !== sm.updated)){ S.shotModel = sm; changed = true; }
+  S.gameCtx = S.gameCtx || new Map();
+  if (D && D.games) for (const [gid, m] of Object.entries(D.games)) if (m.spot || m.avail){ S.gameCtx.set(gid, { spot: m.spot, avail: m.avail }); changed = true; }
   if (rt && rt.teams && (!S.ratings || S.ratings.updated !== rt.updated)){ S.ratings = rt; S.ratings.updatedText = rt.updated ? 'updated ' + new Date(rt.updated).toLocaleDateString([], { month: 'short', day: 'numeric' }) + `, ${rt.games} games` : ''; changed = true; }
   if (D && D.feed){ S.feedSrv = Object.values(D.feed); changed = true; }
   if (D && D.games) for (const [gid, m] of Object.entries(D.games)){ if (m.h1Lines && m.h1Lines.length && !(S.h1Lines.get(gid) || []).length){ S.h1Lines.set(gid, m.h1Lines); changed = true; } }
   if (changed){ for (const g of S.games.values()) recompute(g); if (S.view === 'board') renderBoard(); if (S.open) renderDetail(); }
 }
+async function loadPlayersDB(){ if (S.playersDB) return S.playersDB; const j = await srvGet('players.json', 60*60e3); if (j && j.players) S.playersDB = j; return S.playersDB || null; }
 async function gameHistory(gid){
   const [ls, lo] = await Promise.all([DB.byGame('snaps', gid), DB.byGame('odds', gid)]);
   const g = S.games.get(gid); const day = S.date; const D = SRV.base ? await loadServerDay(day) : null;
@@ -516,7 +529,8 @@ async function fetchSummary(gid){
     const wp = (j.winprobability || []).map(w => ({ pid: w.playId, hw: num(w.homeWinPercentage) })).filter(w => w.hw != null);
     const det = { ts: Date.now(), homeId, awayId, totH, totA, pH, pA, plays, poss: countPossessions(plays, homeId, awayId), pick, wp,
       predictor: j.predictor ? { h: num(j.predictor.homeTeam?.gameProjection), a: num(j.predictor.awayTeam?.gameProjection) } : null,
-      injuries: (j.injuries || []).map(t => ({ team: String(t.team?.id || ''), list: (t.injuries || []).map(i => `${i.athlete?.displayName || '?'} (${i.status || i.type?.description || '?'})`) })),
+      injuries: (j.injuries || []).map(t => { const items = (t.injuries || []).map(i => ({ id: String(i.athlete?.id || ''), name: i.athlete?.displayName || '?', status: i.status || i.type?.description || i.details?.type || '?' }));
+        return { team: String(t.team?.id || ''), items, list: items.map(i => `${i.name} (${i.status})`) }; }),
       hasBox: tb.length > 0 && totH.fga != null };
     S.details.set(gid, det);
     return det;
@@ -745,16 +759,20 @@ function advanced(t, o, pts, oppPts, poss){
 
 /* Adjusted luck: compare made shots to expected makes given team history (shrunk to D1 average).
    Only a share of each deviation is labeled luck (LUCK_SHARE) – the rest is treated as real signal. */
-function luckFor(t, prior){
+function luckFor(t, prior, xq){
   if (!t || t.fga == null) return null;
-  const p3 = shrink(prior?.tp, prior?.tpaTot, LEAGUE.tp, 250), pf = shrink(prior?.ft, prior?.ftaTot, LEAGUE.ft, 120), p2 = shrink(prior?.twop, prior?.twoaTot, LEAGUE.twop, 200);
+  let p3 = shrink(prior?.tp, prior?.tpaTot, LEAGUE.tp, 250), pf = shrink(prior?.ft, prior?.ftaTot, LEAGUE.ft, 120), p2 = shrink(prior?.twop, prior?.twoaTot, LEAGUE.twop, 200);
+  // blend in shot quality from shot locations when enough located shots exist (half team history, half where the shots came from)
+  const sq = xq && ((xq.n3 >= 5 && xq.p3 != null) || (xq.n2 >= 8 && xq.p2 != null));
+  if (xq && xq.n3 >= 5 && xq.p3 != null) p3 = 0.5*p3 + 0.5*xq.p3;
+  if (xq && xq.n2 >= 8 && xq.p2 != null) p2 = 0.5*p2 + 0.5*xq.p2;
   const tpa = t.tpa || 0, tpm = t.tpm || 0, fta = t.fta || 0, ftm = t.ftm || 0, twoa = t.fga - tpa, twom = t.fgm - tpm;
   const d3 = (tpm - tpa*p3)*3, dF = ftm - fta*pf, d2 = (twom - twoa*p2)*2;
   const v3 = tpa*p3*(1-p3)*9, vF = fta*pf*(1-pf), v2 = twoa*p2*(1-p2)*4;
   const luck = d3*LUCK_SHARE.three + dF*LUCK_SHARE.ft + d2*LUCK_SHARE.two;
   const sd = Math.sqrt(v3*LUCK_SHARE.three**2 + vF*LUCK_SHARE.ft**2 + v2*LUCK_SHARE.two**2);
   return { exp3: p3, expFt: pf, exp2: p2, d3, dF, d2, luck, sd, z: sd ? luck/sd : 0, expPts: null,
-    raw: d3 + dF + d2, act3: tpa ? tpm/tpa : null, actFt: fta ? ftm/fta : null, act2: twoa ? twom/twoa : null, priorKnown: !!prior };
+    raw: d3 + dF + d2, act3: tpa ? tpm/tpa : null, actFt: fta ? ftm/fta : null, act2: twoa ? twom/twoa : null, priorKnown: !!prior, sq: !!sq, xq: xq || null };
 }
 function luckLabel(z){ const a = Math.abs(z); if (a < 1) return 'Within normal variance'; const dir = z > 0 ? 'hot' : 'cold'; return a < 2 ? `Running ${dir}` : `Strongly ${dir}`; }
 
@@ -802,15 +820,21 @@ function pregameModel(g){
     // Opponent-adjusted ratings built from every D1 game this season (blended with last season early on)
     const L = S.ratings.lg, pace = RH.t*RA.t/L.t, hca = g.neutral ? 0 : LEAGUE.hcaPts;
     ratings = { pace, h: pace*(RH.o*RA.d/L.eff)/100 + hca/2, a: pace*(RA.o*RH.d/L.eff)/100 - hca/2, adjusted: true, rh: RH, ra: RA };
+    // injuries/absences (net rating per 100 possessions) and schedule spots (points), from the collector
+    const ctx = S.gameCtx && S.gameCtx.get(g.gid); const notes = [];
+    if (ctx && ctx.avail){ const dH = ctx.avail.h?.delta || 0, dA = ctx.avail.a?.delta || 0;
+      if (dH || dA){ ratings.h += pace*(dH/2 - dA/2)/100; ratings.a += pace*(dA/2 - dH/2)/100; notes.push(`availability ${g.home.abbr} ${sgn(dH)} / ${g.away.abbr} ${sgn(dA)} per 100`); } }
+    if (ctx && ctx.spot && ctx.spot.adj){ ratings.h += ctx.spot.adj/2; ratings.a -= ctx.spot.adj/2; notes.push(`schedule spot ${sgn(ctx.spot.adj)} pts ${g.home.abbr}`); }
+    if (notes.length) ratings.adjNote = notes.join(', ');
   } else if (H && A && H.pace && A.pace && H.ortg && A.ortg && H.drtg && A.drtg){
     const pace = H.pace*A.pace/LEAGUE.pace; const hca = g.neutral ? 0 : LEAGUE.hcaPts;
     ratings = { pace, h: pace*(H.ortg*A.drtg/LEAGUE.eff)/100 + hca/2, a: pace*(A.ortg*H.drtg/LEAGUE.eff)/100 - hca/2 };
   }
   if (ln && ln.total != null && ln.homeSpread != null) market = { h: (ln.total - ln.homeSpread)/2, a: (ln.total + ln.homeSpread)/2 };
   let out;
-  if (market && ratings) out = { h: 0.75*market.h + 0.25*ratings.h, a: 0.75*market.a + 0.25*ratings.a, pace: ratings.pace, src: `Market line (75%) + ${ratings.adjusted ? 'opponent-adjusted' : 'raw season'} team ratings (25%)` };
+  if (market && ratings) out = { h: CAL.mktW*market.h + (1 - CAL.mktW)*ratings.h, a: CAL.mktW*market.a + (1 - CAL.mktW)*ratings.a, pace: ratings.pace, src: `Market line (${Math.round(CAL.mktW*100)}%) + ${ratings.adjusted ? 'opponent-adjusted' : 'raw season'} team ratings (${Math.round((1 - CAL.mktW)*100)}%)${ratings.adjNote ? ' · ' + ratings.adjNote : ''}` };
   else if (market) out = { h: market.h, a: market.a, pace: H?.pace && A?.pace ? H.pace*A.pace/LEAGUE.pace : (market.h + market.a)/(2*LEAGUE.ppp), src: 'Market line only (team ratings unavailable)' };
-  else if (ratings) out = { h: ratings.h, a: ratings.a, pace: ratings.pace, src: `${ratings.adjusted ? 'Opponent-adjusted' : 'Raw season'} team ratings only (no line available)` };
+  else if (ratings) out = { h: ratings.h, a: ratings.a, pace: ratings.pace, src: `${ratings.adjusted ? 'Opponent-adjusted' : 'Raw season'} team ratings only (no line available)${ratings.adjNote ? ' · ' + ratings.adjNote : ''}` };
   else { const hca = g.neutral ? 0 : LEAGUE.hcaPts; out = { h: LEAGUE.pace*LEAGUE.ppp + hca/2, a: LEAGUE.pace*LEAGUE.ppp - hca/2, pace: LEAGUE.pace, src: 'League-average baseline only (low confidence)', weak: true }; }
   out.hPPP = out.h/out.pace; out.aPPP = out.a/out.pace; out.ratings = ratings; out.market = market;
   return out;
@@ -839,7 +863,7 @@ function project(g){
     const counted = det.poss; const eH = estPoss(det.totH), eA = estPoss(det.totA);
     possH = counted ? counted.h : eH ?? 0; possA = counted ? counted.a : eA ?? 0;
     res.possSource = counted ? 'counted from play-by-play' : 'estimated from box score';
-    luckH = luckFor(det.totH, H); luckA = luckFor(det.totA, A);
+    luckH = luckFor(det.totH, H, shotQ(det.plays, g.home.id)); luckA = luckFor(det.totA, A, shotQ(det.plays, g.away.id));
     const wH = possH/(possH + 45), wA = possA/(possA + 45);
     if (possH > 3) hPPP = (1-wH)*pre.hPPP + wH*clamp((hPts - (luckH?.luck || 0))/possH, 0.6, 1.6);
     if (possA > 3) aPPP = (1-wA)*pre.aPPP + wA*clamp((aPts - (luckA?.luck || 0))/possA, 0.6, 1.6);
@@ -872,7 +896,7 @@ function project(g){
   // First half: simulate only to halftime (no end-game fouling, no overtime)
   const h1L = h1Line(g);
   if (g.status === 'pre' || (g.status === 'in' && g.period === 1)){
-    const s1 = simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*H1_PPP_FACTOR, aPPP: aPPP*H1_PPP_FACTOR, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims));
+    const s1 = simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims));
     const t1 = s1.hs.map((h, i) => h + s1.as[i]).sort((x, y) => x - y), m1 = s1.hs.map((h, i) => h - s1.as[i]).sort((x, y) => x - y);
     res.h1 = { projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L };
     if (h1L){ if (h1L.total != null){ res.h1.pOver = t1.filter(v => v > h1L.total).length/t1.length; res.h1.pPushT = t1.filter(v => v === h1L.total).length/t1.length; }
@@ -1110,6 +1134,73 @@ function playerAdvanced(P, T){
       tov: plays ? to/plays : null, ftr: fga ? fta/fga : null, ppa: tsa ? pts/tsa : null };
   }
   return res;
+}
+
+/* ---------- shot locations (shared) ---------- */
+const RIM = { x: 25, y: 5.25 }, THREE_R = 22.15;
+function shotList(plays, teamId, playerId){
+  const out = [];
+  for (const p of plays || []){
+    if (p.kind !== 'fg' || p.cx == null || p.cy == null) continue;
+    if (teamId && p.team !== teamId) continue; if (playerId && (!p.ath || p.ath[0] !== String(playerId))) continue;
+    let x = p.cx, y = p.cy; if (x < -1 || x > 51 || y < -1 || y > 95) continue;
+    if (y > 47){ x = 50 - x; y = 94 - y; } // shots logged at the far basket: mirror to one half court
+    const d = Math.hypot(x - RIM.x, y - RIM.y);
+    const zone = p.three ? 'three' : (d <= 4 || p.shot === 'dunk' || p.shot === 'layup' || p.shot === 'tip') ? 'rim' : d <= 10 ? 'paint' : 'mid';
+    out.push({ x, y, d, made: p.made, three: p.three, zone, text: p.text, period: p.period, clock: p.clock });
+  }
+  return out;
+}
+const SHOT_DEFAULT = { rim: 0.60, p: 0.40, m1: 0.37, m2: 0.36, c3: 0.375, ab3: 0.335 };
+function shotBin(s){ if (s.three) return (s.y < 9.5 && (s.x < 4 || s.x > 46)) ? 'c3' : 'ab3'; return s.d <= 4 || s.zone === 'rim' ? 'rim' : s.d <= 10 ? 'p' : s.d <= 17 ? 'm1' : 'm2'; }
+function binRate(b){ const m = S.shotModel && S.shotModel.bins && S.shotModel.bins[b]; return m && m.a >= 400 ? m.m/m.a : SHOT_DEFAULT[b]; }
+/* expected make rates from where a team's shots came from (D1 averages by zone, learned by the collector) */
+function shotQ(plays, teamId){
+  const sh = shotList(plays, teamId); if (sh.length < 10) return null;
+  let x2 = 0, n2 = 0, x3 = 0, n3 = 0, m2 = 0, m3 = 0;
+  for (const s of sh){ const r = binRate(shotBin(s)); if (s.three){ n3++; x3 += r; if (s.made) m3++; } else { n2++; x2 += r; if (s.made) m2++; } }
+  return { n2, n3, p2: n2 ? x2/n2 : null, p3: n3 ? x3/n3 : null, xPts: 2*x2 + 3*x3, pts: 2*m2 + 3*m3, n: sh.length };
+}
+function shotBinCounts(plays, teamId){ const o = {}; for (const s of shotList(plays, teamId)){ const b = shotBin(s); o[b] = o[b] || [0, 0]; o[b][0]++; if (s.made) o[b][1]++; } return o; }
+
+/* Possessions split into transition (first action within 10s after a defensive rebound or turnover) and half-court */
+function possSegments(det, g){
+  if (!det || !det.plays || det.plays.length < 30) return null;
+  const H = g.home.id, A = g.away.id, side = t => t === H ? 'h' : t === A ? 'a' : null;
+  const z = () => ({ poss: 0, tp: 0, tpts: 0, hp: 0, hpts: 0, scp: 0, potp: 0 });
+  const out = { h: z(), a: z() }; let cur = null, pH = 0, pA = 0, last = null, per = null;
+  const close = () => { if (!cur) return; const o = out[cur.sd]; o.poss++; if (cur.trans){ o.tp++; o.tpts += cur.pts; } else { o.hp++; o.hpts += cur.pts; } if (cur.reason === 'to') o.potp += cur.pts; cur = null; };
+  for (const p of det.plays){
+    if (p.period !== per){ close(); per = p.period; last = null; }
+    const sd = side(p.team);
+    if ((p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to') && sd && (!cur || cur.sd !== sd)){
+      close(); const reason = last && last.k === 'drb' && last.sd === sd ? 'drb' : last && last.k === 'to' && last.sd !== sd ? 'to' : last && last.k === 'made' ? 'made' : 'other';
+      const st = last ? last.el : p.el; cur = { sd, reason, pts: 0, orb: false, trans: (reason === 'drb' || reason === 'to') && p.el - st <= 10 };
+    }
+    const dh = p.h != null ? p.h - pH : 0, da = p.a != null ? p.a - pA : 0;
+    if (cur){ const gain = cur.sd === 'h' ? dh : da; if (gain > 0){ cur.pts += gain; if (cur.orb) out[cur.sd].scp += gain; } }
+    if (p.kind === 'orb' && cur && sd === cur.sd) cur.orb = true;
+    if (p.kind === 'drb' && sd) last = { k: 'drb', sd, el: p.el }; else if (p.kind === 'to' && sd) last = { k: 'to', sd, el: p.el }; else if ((p.kind === 'fg' || p.kind === 'ft') && p.made && sd) last = { k: 'made', sd, el: p.el };
+    if (p.h != null) pH = Math.max(pH, p.h); if (p.a != null) pA = Math.max(pA, p.a);
+  }
+  close(); return out;
+}
+/* Garbage time: once the margin is decisive for the time left in regulation, possessions stop counting toward ratings */
+function isGarbage(margin, el){ if (el >= 2400) return false; const rem = 2400 - el, m = Math.abs(margin);
+  return (rem <= 240 && m >= 13) || (rem <= 480 && m >= 16) || (rem <= 720 && m >= 20) || (rem <= 1200 && m >= 25); }
+function nonGarbage(det, g){
+  if (!det || !det.plays || det.plays.length < 30) return null;
+  const o = { hs: 0, as: 0, hpos: 0, apos: 0, gSec: 0 }; let pH = 0, pA = 0, lastT = null, per = null, lastEl = 0;
+  for (const p of det.plays){
+    const garb = isGarbage(pH - pA, p.el);
+    if (garb) o.gSec += Math.max(0, p.el - lastEl);
+    if (p.period !== per){ per = p.period; lastT = null; }
+    if (!garb){ if (p.h != null && p.h > pH) o.hs += p.h - pH; if (p.a != null && p.a > pA) o.as += p.a - pA;
+      if (p.team && (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to') && p.team !== lastT){ if (p.team === g.home.id) o.hpos++; else if (p.team === g.away.id) o.apos++; } }
+    if (p.team && (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to')) lastT = p.team;
+    lastEl = p.el; if (p.h != null) pH = Math.max(pH, p.h); if (p.a != null) pA = Math.max(pA, p.a);
+  }
+  return o.hpos >= 20 && o.apos >= 20 ? o : null;
 }
 
 /*@@CORE_END@@*/ // (the background collector runs everything above this line)
@@ -1514,7 +1605,7 @@ function tabOverview(g, det){
     ${det && det.predictor && (det.predictor.h != null) ? `<tr><td>ESPN BPI pregame (reference)</td><td>${esc(H)} ${f1(det.predictor.h)}% to win</td></tr>` : ''}
     ${det && det.injuries && det.injuries.some(i => i.list.length) ? `<tr><td>Reported availability</td><td style="white-space:normal">${esc(det.injuries.filter(i => i.list.length).map(i => (i.team === g.home.id ? H : A) + ': ' + i.list.join(', ')).join(' · '))}</td></tr>` : ''}
   </tbody></table>
-  <div class="note">The simulation plays out every remaining possession with points-per-possession outcomes, late-game intentional fouling (trailing team fouls inside 1:00), clock-killing when ahead, three-point hunting when behind, bonus situations and overtime. Rotation/availability is not modeled because no reliable live lineup feed is available; reported injuries are shown for context only.</div>
+  <div class="note">The simulation plays out every remaining possession with points-per-possession outcomes, late-game intentional fouling (trailing team fouls inside 1:00), clock-killing when ahead, three-point hunting when behind, bonus situations and overtime. Before tip-off, players listed on ESPN's injury report adjust the ratings side of the model through their player impact ratings (see the Preview tab); in-game rotations aren't modeled.</div>
   ${updatedLine(g, det)}</div>`;
   return h;
 }
@@ -1600,7 +1691,18 @@ function tabTeam(g, det){
   </tbody></table></div>
   <div class="section"><h3>Four Factors <small>observed this game</small></h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
     ${pr('Effective FG% (eFG%)', A.efg, H.efg)}${pr('Turnover rate (TO / poss)', A.tov, H.tov)}${pr('Offensive rebound rate', A.orbPct, H.orbPct)}${pr('Free-throw rate (FTA / FGA)', A.ftr, H.ftr)}
-  </tbody></table><div class="note">Possessions for rates: ${det.poss ? 'counted from play-by-play' : 'estimated (FGA − ORB + TO + 0.475×FTA)'}.</div></div></div></div>${updatedLine(g, det)}`;
+  </tbody></table><div class="note">Possessions for rates: ${det.poss ? 'counted from play-by-play' : 'estimated (FGA − ORB + TO + 0.475×FTA)'}.</div></div></div></div>${transitionSection(g, det)}${updatedLine(g, det)}`;
+}
+function transitionSection(g, det){
+  const T = possSegments(det, g); if (!T) return '';
+  const r = (a, b) => b ? (a/b).toFixed(2) : '—';
+  const row = (l, fa, fh) => `<tr><td>${l}</td><td class="num">${fa}</td><td class="num">${fh}</td></tr>`;
+  return `<div class="section"><h3>Transition vs half-court <small>— from play-by-play</small></h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+    ${row('Transition possessions (share)', `${T.a.tp} (${pct(T.a.poss ? T.a.tp/T.a.poss : null, 0)})`, `${T.h.tp} (${pct(T.h.poss ? T.h.tp/T.h.poss : null, 0)})`)}
+    ${row('Points per transition possession', r(T.a.tpts, T.a.tp), r(T.h.tpts, T.h.tp))}
+    ${row('Half-court possessions', T.a.hp, T.h.hp)}${row('Points per half-court possession', r(T.a.hpts, T.a.hp), r(T.h.hpts, T.h.hp))}
+    ${row('Second-chance points (after an offensive rebound)', T.a.scp, T.h.scp)}${row('Points off turnovers (possessions starting with a steal/turnover)', T.a.potp, T.h.potp)}
+  </tbody></table><div class="note">Transition = the first shot, free throw or turnover comes within 10 seconds of a defensive rebound or a turnover. Possession starts are read from play-by-play, so counts are close but not exact.</div></div>`;
 }
 function tabHalves(g, det){
   const HS = halfSplits(det, g);
@@ -1625,20 +1727,6 @@ function tabHalves(g, det){
 /* =========================================================================
    SHOT CHARTS (ESPN shot coordinates in feet: x 0-50 across, y from the baseline)
    ========================================================================= */
-const RIM = { x: 25, y: 5.25 }, THREE_R = 22.15;
-function shotList(plays, teamId, playerId){
-  const out = [];
-  for (const p of plays || []){
-    if (p.kind !== 'fg' || p.cx == null || p.cy == null) continue;
-    if (teamId && p.team !== teamId) continue; if (playerId && (!p.ath || p.ath[0] !== String(playerId))) continue;
-    let x = p.cx, y = p.cy; if (x < -1 || x > 51 || y < -1 || y > 95) continue;
-    if (y > 47){ x = 50 - x; y = 94 - y; } // shots logged at the far basket: mirror to one half court
-    const d = Math.hypot(x - RIM.x, y - RIM.y);
-    const zone = p.three ? 'three' : (d <= 4 || p.shot === 'dunk' || p.shot === 'layup' || p.shot === 'tip') ? 'rim' : d <= 10 ? 'paint' : 'mid';
-    out.push({ x, y, d, made: p.made, three: p.three, zone, text: p.text, period: p.period, clock: p.clock });
-  }
-  return out;
-}
 function courtSvg(shots, color, title){
   const S10 = 10, W = 500, H = 470, X = x => x*S10, Y = y => H - y*S10;
   const cx = X(RIM.x), cy = Y(RIM.y);
@@ -1697,13 +1785,24 @@ function ratingCtx(){
   if (S._rc && S._rc.at === S.ratings.updated) return S._rc;
   const T = S.ratings.teams, ids = Object.keys(T);
   const rank = (get, desc) => { const arr = ids.filter(id => get(id) != null).sort((a, b) => desc ? get(b) - get(a) : get(a) - get(b)); const r = {}; arr.forEach((id, i) => r[id] = i + 1); return r; };
-  const F = (id, side, k) => T[id].ff && T[id].ff[side] ? T[id].ff[side][k] : null;
+  const F = (id, side, k) => { const src = T[id].ffa || T[id].ff; return src && src[side] ? src[side][k] : null; };
   const rk = { net: rank(id => T[id].net, true), o: rank(id => T[id].o, true), d: rank(id => T[id].d, false), t: rank(id => T[id].t, true), sos: rank(id => T[id].sos, true),
     o_efg: rank(id => F(id, 'o', 'efg'), true), o_tov: rank(id => F(id, 'o', 'tov'), false), o_orb: rank(id => F(id, 'o', 'orb'), true), o_ftr: rank(id => F(id, 'o', 'ftr'), true),
     d_efg: rank(id => F(id, 'd', 'efg'), false), d_tov: rank(id => F(id, 'd', 'tov'), true), d_orb: rank(id => F(id, 'd', 'orb'), false), d_ftr: rank(id => F(id, 'd', 'ftr'), false) };
-  const avg = k => { const v = ids.map(id => F(id, 'o', k)).filter(x => x != null); return v.length ? mean(v) : null; };
+  const avg = k => { if (S.ratings.lgFF && S.ratings.lgFF[k] != null) return S.ratings.lgFF[k]; const v = ids.map(id => F(id, 'o', k)).filter(x => x != null); return v.length ? mean(v) : null; };
   S._rc = { at: S.ratings.updated, rk, n: ids.length, lg: { efg: avg('efg'), tov: avg('tov'), orb: avg('orb'), ftr: avg('ftr') } };
   return S._rc;
+}
+function availSpotHtml(g){
+  const ctx = S.gameCtx && S.gameCtx.get(g.gid); if (!ctx) return '';
+  const A = esc(g.away.abbr), H = esc(g.home.abbr); let h = '<div class="two">';
+  if (ctx.avail){ const lst = (x, ab) => x && x.out && x.out.length ? x.out.map(o => `<div class="fi" style="cursor:default">${ab}: <b>${esc(o.name)}</b> — ${esc(o.status)}${o.imp != null ? ` · impact ${sgn(o.imp)}, ${o.mpg} mpg → <b>${sgn(o.d)}</b>/100` : ' · not enough data to rate'}</div>`).join('') : `<div class="note">${ab}: nobody listed</div>`;
+    h += `<div class="section"><h3>Availability <small>— ESPN injury report, ${ctx.avail.at ? 'checked ' + ago(ctx.avail.at) : ''}</small></h3>${lst(ctx.avail.a, A)}${lst(ctx.avail.h, H)}
+      <div class="note">Net adjustment: ${A} ${sgn(ctx.avail.a?.delta || 0)} · ${H} ${sgn(ctx.avail.h?.delta || 0)} per 100 possessions (out = full impact × minutes share, doubtful 80%, questionable 40%). Applied to the ratings side of the model; the market line usually already reflects injuries.</div></div>`; }
+  if (ctx.spot){ const sp = (x, ab) => `${ab}: ${x.rest == null ? 'first logged game' : x.rest === 0 ? '<b>back-to-back</b>' : x.rest + ' day' + (x.rest === 1 ? '' : 's') + ' rest'} · ${x.g7} game${x.g7 === 1 ? '' : 's'} in the last 7 days${x.road >= 2 ? ` · <b>${x.road}${x.road === 2 ? 'nd' : x.road === 3 ? 'rd' : 'th'} straight road game</b>` : ''}`;
+    h += `<div class="section"><h3>Schedule spot</h3><div class="fi" style="cursor:default">${sp(ctx.spot.a, A)}</div><div class="fi" style="cursor:default">${sp(ctx.spot.h, H)}</div>
+      <div class="note">Model adjustment: <b>${sgn(ctx.spot.adj || 0)}</b> points for ${H}, from how rest and road-trip spots have played out this season (shrunk until there's enough data — see the Model page).</div></div>`; }
+  return h + '</div>';
 }
 function tabPreview(g, det){
   const C = ratingCtx(), T = S.ratings && S.ratings.teams, RA = T && T[g.away.id], RH = T && T[g.home.id];
@@ -1721,8 +1820,8 @@ function tabPreview(g, det){
   const FF = [['efg', 'shooting (eFG%)', 'high', 0.03], ['tov', 'ball security (TO%)', 'low', 0.025], ['orb', 'offensive rebounding (OR%)', 'high', 0.04], ['ftr', 'getting to the line (FTA/FGA)', 'high', 0.06]];
   const edges = [];
   for (const [offT, defT, offR, defR] of [[g.away, g.home, RA, RH], [g.home, g.away, RH, RA]]){
-    if (!offR.ff || !defR.ff) continue;
-    for (const [k, label, dir, sd] of FF){ const o = offR.ff.o[k], d = defR.ff.d[k], lg = C.lg[k]; if (o == null || d == null || lg == null) continue;
+    const oF = offR.ffa || offR.ff, dF = defR.ffa || defR.ff; if (!oF || !dF) continue;
+    for (const [k, label, dir, sd] of FF){ const o = oF.o[k], d = dF.d[k], lg = C.lg[k]; if (o == null || d == null || lg == null) continue;
       const sign = dir === 'high' ? 1 : -1, score = (sign*(o - lg) + sign*(d - lg))/sd;
       edges.push({ score, txt: `<b>${esc(offT.abbr)}</b> ${label}: ${pct(o)} on offense (#${C.rk['o_' + k][offT.id]}) vs ${esc(defT.abbr)} allowing ${pct(d)} (#${C.rk['d_' + k][defT.id]} defense)` }); } }
   edges.sort((x, y) => Math.abs(y.score) - Math.abs(x.score));
@@ -1735,10 +1834,14 @@ function tabPreview(g, det){
     ${row('Adjusted defense (allowed/100)', fx(RA.d), fx(RH.d), rk('d', g.away.id), rk('d', g.home.id), 'low')}
     ${row('Tempo (poss/40)', fx(RA.t), fx(RH.t), rk('t', g.away.id), rk('t', g.home.id))}
     ${row('Strength of schedule', RA.sos != null ? sgn(RA.sos) : null, RH.sos != null ? sgn(RH.sos) : null, rk('sos', g.away.id), rk('sos', g.home.id))}
+    ${row('Recent form (last 8, net)', RA.form ? sgn(RA.form.net) : null, RH.form ? sgn(RH.form.net) : null, RA.form ? '#' + RA.form.rk : '', RH.form ? '#' + RH.form.rk : '')}
+    ${row('Transition share of possessions', RA.style ? pct(RA.style.trPct, 0) : null, RH.style ? pct(RH.style.trPct, 0) : null)}
+    ${row('Points per transition / half-court poss', RA.style ? `${RA.style.trPPP?.toFixed(2) ?? '—'} / ${RA.style.hcPPP?.toFixed(2) ?? '—'}` : null, RH.style ? `${RH.style.trPPP?.toFixed(2) ?? '—'} / ${RH.style.hcPPP?.toFixed(2) ?? '—'}` : null)}
     ${row('Record', (S.teamRec || {})[g.away.id] || null, (S.teamRec || {})[g.home.id] || null)}
   </tbody></table></div></div>
   <div class="two"><div class="section"><h3>Pace</h3><div class="note" style="font-size:13px;color:var(--text-secondary)">${paceTxt}</div></div>
-  <div class="section"><h3>Biggest Four Factors matchups <small>(offense vs the other team's defense)</small></h3>${edgeHtml}</div></div>
+  <div class="section"><h3>Biggest Four Factors matchups <small>(offense vs the other team's defense${RA.ffa ? ', opponent-adjusted' : ''})</small></h3>${edgeHtml}</div></div>
+  ${availSpotHtml(g)}
   <div class="two"><div class="section"><h3>Late-game & halftime trends</h3><table><tbody>
     <tr><td>${esc(A)} clutch</td><td style="text-align:left">${cl(RA)}</td></tr><tr><td>${esc(H)} clutch</td><td style="text-align:left">${cl(RH)}</td></tr>
     <tr><td>${esc(A)} by half</td><td style="text-align:left">${ha(RA)}</td></tr><tr><td>${esc(H)} by half</td><td style="text-align:left">${ha(RH)}</td></tr></tbody></table>
@@ -1788,7 +1891,14 @@ function tabPace(g, det){
 function tabLuck(g, det){
   if (!det || !det.hasBox) return `<div class="section">Adjusted luck appears once the game has a box score.</div>`;
   const sA = S.priors.get(g.away.id), sH = S.priors.get(g.home.id);
-  const LA = luckFor(det.totA, sA), LH = luckFor(det.totH, sH); if (!LA || !LH) return `<div class="section">${NA} — not enough shooting data yet.</div>`;
+  const QA = shotQ(det.plays, g.away.id), QH = shotQ(det.plays, g.home.id);
+  const LA = luckFor(det.totA, sA, QA), LH = luckFor(det.totH, sH, QH); if (!LA || !LH) return `<div class="section">${NA} — not enough shooting data yet.</div>`;
+  const sqSec = (QA || QH) ? `<div class="section"><h3>Shot-quality luck <small>— from shot locations: what an average D1 shooter makes from the spots each team shot from</small></h3><table><thead><tr><th></th><th>${esc(g.away.abbr)}</th><th>${esc(g.home.abbr)}</th></tr></thead><tbody>
+      <tr><td>Located shots</td><td class="num">${QA ? QA.n : NA}</td><td class="num">${QH ? QH.n : NA}</td></tr>
+      <tr><td>Expected 2P% from shot locations <span class="tag">MODEL</span></td><td class="num">${pct(QA && QA.p2)}</td><td class="num">${pct(QH && QH.p2)}</td></tr>
+      <tr><td>Expected 3P% from shot locations <span class="tag">MODEL</span></td><td class="num">${pct(QA && QA.p3)}</td><td class="num">${pct(QH && QH.p3)}</td></tr>
+      <tr><td>Field-goal points: actual vs location-expected</td><td class="num">${QA ? `${QA.pts} vs ${QA.xPts.toFixed(1)} (<b>${sgn(QA.pts - QA.xPts)}</b>)` : NA}</td><td class="num">${QH ? `${QH.pts} vs ${QH.xPts.toFixed(1)} (<b>${sgn(QH.pts - QH.xPts)}</b>)` : NA}</td></tr>
+    </tbody></table><div class="note">Zone make rates are ${S.shotModel && S.shotModel.bins && Object.values(S.shotModel.bins).some(b => b.a >= 400) ? 'learned by the collector from every logged D1 shot' : 'D1 averages (the collector replaces these with learned rates once enough shots are logged)'}. Expected shooting below blends this 50/50 with each team's shooting history.</div></div>` : '';
   const possA = det.poss?.a ?? estPoss(det.totA), possH = det.poss?.h ?? estPoss(det.totH);
   const net = (own, opp) => own.luck - opp.luck; const netSd = (x, y) => Math.sqrt(x.sd**2 + y.sd**2);
   const rate = (own, opp, ps) => ps ? net(own, opp)/ps*100 : null;
@@ -1798,7 +1908,7 @@ function tabLuck(g, det){
   const r = (l, x, y, fx) => `<tr><td>${l}</td><td class="num">${fx(x)}</td><td class="num">${fx(y)}</td></tr>`;
   const ptsA = g.away.score || 0, ptsH = g.home.score || 0;
   const expA = ptsA - LA.raw, expH = ptsH - LH.raw;
-  return `<div class="section"><h3>Adjusted Luck Rating <small>— positive = the team's result is better than its shot-making expectation (own shooting luck minus opponent shooting luck)</small></h3><div class="tiles">
+  return sqSec + `<div class="section"><h3>Adjusted Luck Rating <small>— positive = the team's result is better than its shot-making expectation (own shooting luck minus opponent shooting luck)</small></h3><div class="tiles">
     ${tile(g.away.abbr, LA, LH, possA)}${tile(g.home.abbr, LH, LA, possH)}
     <div class="tile"><span>Actual margin (${esc(g.home.abbr)})</span><b>${sgn(ptsH - ptsA, 0)}</b><em>observed</em></div>
     <div class="tile"><span>Luck-adjusted margin <span class="tag">MODEL</span></span><b>${sgn((ptsH - ptsA) - (net(LH, LA)), 1)}</b><em>regresses only the luck share of shooting</em></div>
@@ -1949,8 +2059,8 @@ async function renderRank(){
   const sm = v => `<small class="na" style="font-style:normal">(${v ?? '—'})</small>`;
   let head = '', body = '', note = '';
   if (tab === 'ratings'){
-    head = `<th>Rk</th><th>Team</th><th>Conf</th><th>Record</th><th title="Adjusted offense minus adjusted defense (points per 100 possessions vs an average D1 team)">Net</th><th title="Points scored per 100 possessions vs an average defense">Adj Off (rk)</th><th title="Points allowed per 100 possessions vs an average offense (lower is better)">Adj Def (rk)</th><th title="Possessions per 40 minutes vs an average opponent">Tempo (rk)</th><th title="Average net rating of D1 opponents played so far">SOS (rk)</th><th title="D1 games in the ratings this season">Games</th><th title="Rank change over the last 7 days">7-day</th>`;
-    body = rows.map(id => { const r = T[id]; return `<tr class="${r.rk <= 25 ? 'rk25' : ''} ${r.rk === 26 && !q && !cf ? 'rkline' : ''}"><td class="num">${r.rk}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td>${esc((S.teamRec || {})[id] || '')}</td><td class="num"><b>${sgn(r.net)}</b></td><td class="num">${r.o.toFixed(1)} ${sm(rO[id])}</td><td class="num">${r.d.toFixed(1)} ${sm(rD[id])}</td><td class="num">${r.t.toFixed(1)} ${sm(rT[id])}</td><td class="num">${r.sos != null ? sgn(r.sos) : '—'} ${sm(r.sosRk)}</td><td class="num">${r.gp}</td><td class="num">${r.rk7 ? `<span class="${r.rk7 > 0 ? 'good' : 'bad'}">${r.rk7 > 0 ? '▲' : '▼'}${Math.abs(r.rk7)}</span>` : '—'}</td></tr>`; }).join('');
+    head = `<th>Rk</th><th>Team</th><th>Conf</th><th>Record</th><th title="Adjusted offense minus adjusted defense (points per 100 possessions vs an average D1 team)">Net</th><th title="Points scored per 100 possessions vs an average defense">Adj Off (rk)</th><th title="Points allowed per 100 possessions vs an average offense (lower is better)">Adj Def (rk)</th><th title="Possessions per 40 minutes vs an average opponent">Tempo (rk)</th><th title="Average net rating of D1 opponents played so far">SOS (rk)</th><th title="D1 games in the ratings this season">Games</th><th title="Rank change over the last 7 days">7-day</th><th title="Opponent-adjusted net rating over the last 8 games (rank)">Form</th>`;
+    body = rows.map(id => { const r = T[id]; return `<tr class="${r.rk <= 25 ? 'rk25' : ''} ${r.rk === 26 && !q && !cf ? 'rkline' : ''}"><td class="num">${r.rk}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td>${esc((S.teamRec || {})[id] || '')}</td><td class="num"><b>${sgn(r.net)}</b></td><td class="num">${r.o.toFixed(1)} ${sm(rO[id])}</td><td class="num">${r.d.toFixed(1)} ${sm(rD[id])}</td><td class="num">${r.t.toFixed(1)} ${sm(rT[id])}</td><td class="num">${r.sos != null ? sgn(r.sos) : '—'} ${sm(r.sosRk)}</td><td class="num">${r.gp}</td><td class="num">${r.rk7 ? `<span class="${r.rk7 > 0 ? 'good' : 'bad'}">${r.rk7 > 0 ? '▲' : '▼'}${Math.abs(r.rk7)}</span>` : '—'}</td><td class="num">${r.form ? `<span class="${r.form.net > r.net + 2 ? 'good' : r.form.net < r.net - 2 ? 'bad' : ''}">${sgn(r.form.net)}</span> ${sm(r.form.rk)}` : '—'}</td></tr>`; }).join('');
     note = esc(S.ratings.method || '') + ' Early in the season the rankings lean heavily on last season.';
   } else if (tab === 'clutch'){
     const list = rows.filter(id => T[id].cl && T[id].cl.g).sort((a, b) => ((T[b].cl.o ?? 0) - (T[b].cl.d ?? 0)) - ((T[a].cl.o ?? 0) - (T[a].cl.d ?? 0)));
@@ -1963,14 +2073,23 @@ async function renderRank(){
     body = list.map((id, i) => { const h = T[id].half; return `<tr><td class="num">${i + 1}</td><td>${nameCell(id)}</td><td>${esc((S.conf.get(id) || {}).abbr || '')}</td><td class="num">${h.g}</td><td class="num">${sgn(h.h1)}</td><td class="num">${sgn(h.h2)}</td><td class="num"><b class="${h.adj > 0 ? 'good' : h.adj < 0 ? 'bad' : ''}">${sgn(h.adj)}</b></td></tr>`; }).join('');
     note = 'Teams at the top outscore opponents by more after halftime than before it (on average); teams at the bottom fade. Not opponent-adjusted.';
   } else if (tab === 'ff'){
-    const F = (id, s, k) => T[id].ff ? T[id].ff[s][k] : null; const list = rows.filter(id => T[id].ff);
-    const c = (id, s, k) => `${pct(F(id, s, k))} ${sm(C && C.rk[s + '_' + k][id])}`;
+    const adj = S.ffMode !== 'raw', key = adj ? 'ffa' : 'ff';
+    const F = (id, s, k) => T[id][key] ? T[id][key][s][k] : null; const list = rows.filter(id => T[id][key]);
+    const rkF = (s, k) => { const arr = list.filter(id => F(id, s, k) != null).sort((a, b) => { const better = (s === 'o') === (k !== 'tov') ? -1 : 1; return better*(F(a, s, k) - F(b, s, k)); }); const o = {}; arr.forEach((id, i) => o[id] = i + 1); return o; };
+    const RK = {}; for (const s2 of ['o', 'd']) for (const k of ['efg', 'tov', 'orb', 'ftr']) RK[s2 + '_' + k] = rkF(s2, k);
+    const c = (id, s, k) => `${pct(F(id, s, k))} ${sm(RK[s + '_' + k][id])}`;
     head = `<th>Rk</th><th>Team</th><th>Off eFG%</th><th>Off TO%</th><th>Off OR%</th><th>Off FTA/FGA</th><th>Def eFG%</th><th>Def TO%</th><th>Def OR%</th><th>Def FTA/FGA</th>`;
     body = list.map(id => `<tr><td class="num">${T[id].rk}</td><td>${nameCell(id)}</td><td class="num">${c(id, 'o', 'efg')}</td><td class="num">${c(id, 'o', 'tov')}</td><td class="num">${c(id, 'o', 'orb')}</td><td class="num">${c(id, 'o', 'ftr')}</td><td class="num">${c(id, 'd', 'efg')}</td><td class="num">${c(id, 'd', 'tov')}</td><td class="num">${c(id, 'd', 'orb')}</td><td class="num">${c(id, 'd', 'ftr')}</td></tr>`).join('');
-    note = 'Season Four Factors vs D1 opponents (raw, not opponent-adjusted). Defense columns are what opponents did against the team; ranks are best-to-worst for that team.';
+    note = `<span class="chips" style="display:inline-flex;margin-right:8px"><button class="btn sm ${adj ? 'on' : ''}" data-ffmode="adj">Opponent-adjusted</button><button class="btn sm ${!adj ? 'on' : ''}" data-ffmode="raw">Raw</button></span> ${adj ? 'Adjusted for the strength of each opponent in that factor (what the team would do against an average D1 opponent).' : 'Raw season numbers vs D1 opponents.'} Defense columns are what opponents did against the team; ranks are best-to-worst.`;
+  } else if (tab === 'trans'){
+    const list = rows.filter(id => T[id].style).sort((a, b) => T[b].style.trPct - T[a].style.trPct);
+    const r3 = v => v == null ? '—' : v.toFixed(2);
+    head = `<th>#</th><th>Team</th><th title="Share of possessions that are transition">Transition %</th><th title="Points per transition possession">Trans PPP</th><th title="Points per half-court possession">Half-court PPP</th><th title="Opponent transition share">Opp trans %</th><th>Opp trans PPP</th><th>Opp half-court PPP</th><th title="Second-chance points per game">2nd-chance pts</th><th title="Points off turnovers per game">Pts off TO</th><th>Games</th>`;
+    body = list.map((id, i) => { const x = T[id].style; return `<tr><td class="num">${i + 1}</td><td>${nameCell(id)}</td><td class="num"><b>${pct(x.trPct)}</b></td><td class="num">${r3(x.trPPP)}</td><td class="num">${r3(x.hcPPP)}</td><td class="num">${pct(x.dTrPct)}</td><td class="num">${r3(x.dTrPPP)}</td><td class="num">${r3(x.dHcPPP)}</td><td class="num">${x.scpG ?? '—'}</td><td class="num">${x.potpG ?? '—'}</td><td class="num">${x.g}</td></tr>`; }).join('');
+    note = 'Transition = first shot, free throw or turnover within 10 seconds of a defensive rebound or turnover, read from play-by-play. Season totals vs D1 opponents.';
   }
   if (tab === 'style') return renderStyleMap(m, T, rows, confs, cf, q);
-  const tabs = [['ratings', 'Ratings'], ['clutch', 'Clutch'], ['half', 'Halftime adjusters'], ['ff', 'Four Factors'], ['style', 'Style map']].map(([k, l]) => `<button class="btn sm ${tab === k ? 'on' : ''}" data-ranktab="${k}">${l}</button>`).join('');
+  const tabs = [['ratings', 'Ratings'], ['clutch', 'Clutch'], ['half', 'Halftime adjusters'], ['ff', 'Four Factors'], ['trans', 'Transition'], ['style', 'Style map']].map(([k, l]) => `<button class="btn sm ${tab === k ? 'on' : ''}" data-ranktab="${k}">${l}</button>`).join('');
   m.innerHTML = `<div class="section"><h3>Hoops Lab Top 25 <small>— opponent-adjusted ratings · ${S.ratings.games} D1 games · ${esc(S.ratings.updatedText || '')}</small></h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center"><div class="chips">${tabs}</div><input type="text" id="rankQ" placeholder="Search team…" value="${esc(S.rankQ || '')}"><select id="rankConf"><option value="">All conferences</option>${confs.map(c => `<option ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
     <div class="tw"><table><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="10" class="na">No data yet — this fills in as the collector logs games.</td></tr>`}</tbody></table></div>
@@ -2042,12 +2161,13 @@ async function renderPlayer(){
         <div class="tile"><span>True shooting</span><b>${pct(ts)}</b></div>
         <div class="tile"><span>Usage</span><b>${tot.min ? pct(tot.usgW/tot.min) : NA}</b><em>minutes-weighted</em></div>
         <div class="tile"><span>Avg Game Score</span><b>${tot.g ? (tot.gms/tot.g).toFixed(1) : '—'}</b></div>
+        ${(() => { const q = S.playersDB && S.playersDB.players[P.id]; return q && q.imp != null ? `<div class="tile"><span>Impact rating <span class="tag">MODEL</span></span><b class="${q.imp > 2 ? 'good' : q.imp < -2 ? 'bad' : ''}">${sgn(q.imp)}</b><em>per 100 poss · box ${q.box != null ? sgn(q.box) : '—'} · on/off ${q.oo != null ? sgn(q.oo) : '—'}</em></div>` : ''; })()}
       </div>${S.playerLoading ? `<div class="note">Loading games… ${games.length}/${evs.length}</div>` : ''}</div>
       <div class="two"><div class="section"><h3>Points & Game Score by game</h3>${trend}</div>
         <div class="section"><h3>Season shot chart <small>— ${shots.length} located shots</small></h3>${shots.length ? courtSvg(shots, 'var(--away)', name + ' shot chart') + zoneTable(shots) : '<div class="note">No shot locations available for this player’s games yet.</div>'}</div></div>
       <div class="section"><h3>Game log</h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opp</th><th style="text-align:left">Result</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>TO</th><th>PF</th><th>FG</th><th>3PT</th><th>FT</th><th>GmSc</th><th>TS%</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="17" class="na">No games yet</td></tr>'}</tbody></table></div></div>`;
   };
-  S.playerLoading = true; draw();
+  S.playerLoading = true; draw(); loadPlayersDB().then(() => draw());
   let n = 0;
   const scv = v => v == null ? null : typeof v === 'object' ? num(v.value ?? v.displayValue) : num(v);
   await Promise.all(evs.map(e => gameForPlayer(String(e.id)).then(g0 => {
@@ -2086,7 +2206,7 @@ function renderStyleMap(m, T, rows, confs, cf, q){
     return `<circle class="sm-dot" data-team="${id}" cx="${X(gx(id)).toFixed(1)}" cy="${Y(gy(id)).toFixed(1)}" r="${cls === 'hi' || r.rk <= 25 ? 5 : 4}" fill="${fill}" stroke="#1a1a19" stroke-width="2" style="cursor:pointer" data-tip="${esc(`#${r.rk} ${n.name} · off ${r.o.toFixed(1)} · def ${r.d.toFixed(1)} · tempo ${r.t.toFixed(1)}`)}"></circle>`; };
   const base = ids.filter(id => !hiSet.has(id) && T[id].rk > 25).map(id => dot(id, '')).join('') + ids.filter(id => !hiSet.has(id) && T[id].rk <= 25).map(id => dot(id, '')).join('') + [...hiSet].map(id => dot(id, 'hi')).join('');
   const labels = [...ids.filter(id => T[id].rk <= 10), ...[...hiSet].slice(0, 20)].map(id => `<text x="${X(gx(id)) + 7}" y="${Y(gy(id)) + 4}" fill="#f0efec" font-size="10.5" pointer-events="none">${esc((teamName(id) || {}).abbr || '')}</text>`).join('');
-  const tabs = [['ratings', 'Ratings'], ['clutch', 'Clutch'], ['half', 'Halftime adjusters'], ['ff', 'Four Factors'], ['style', 'Style map']].map(([k, l]) => `<button class="btn sm ${k === 'style' ? 'on' : ''}" data-ranktab="${k}">${l}</button>`).join('');
+  const tabs = [['ratings', 'Ratings'], ['clutch', 'Clutch'], ['half', 'Halftime adjusters'], ['ff', 'Four Factors'], ['trans', 'Transition'], ['style', 'Style map']].map(([k, l]) => `<button class="btn sm ${k === 'style' ? 'on' : ''}" data-ranktab="${k}">${l}</button>`).join('');
   m.innerHTML = `<div class="section"><h3>Style map <small>— every D1 team · opponent-adjusted · ${esc(S.ratings.updatedText || '')}</small></h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center"><div class="chips">${tabs}</div>
       <select id="styleMode"><option value="off" ${mode === 'off' ? 'selected' : ''}>Tempo vs offense</option><option value="def" ${mode === 'def' ? 'selected' : ''}>Tempo vs defense</option><option value="od" ${mode === 'od' ? 'selected' : ''}>Offense vs defense</option></select>
@@ -2100,6 +2220,17 @@ function renderStyleMap(m, T, rows, confs, cf, q){
   document.getElementById('styleMode').onchange = e => { S.styleMode = e.target.value; renderRank(); };
   const qi = document.getElementById('rankQ'); qi.oninput = () => { S.rankQ = qi.value; clearTimeout(S.rankT); S.rankT = setTimeout(() => { renderRank().then(() => { const el = document.getElementById('rankQ'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }); }, 300); };
   document.getElementById('rankConf').onchange = e => { S.rankConf = e.target.value; renderRank(); };
+}
+
+/* ---------- Player impact ratings (team pages) ---------- */
+function impactTable(DB2, teamId){
+  if (!DB2) return `<div class="section"><h3>Player impact ratings</h3><div class="note">${SRV.base ? 'Player impact ratings appear once the background collector has logged games.' : 'Player impact ratings come from the background collector.'}</div></div>`;
+  const list = Object.entries(DB2.players).filter(([, p]) => p.t === String(teamId) && p.min >= 20).sort((a, b) => (b[1].imp ?? -99) - (a[1].imp ?? -99));
+  if (!list.length) return '';
+  const N = v => v == null ? '—' : v.toFixed(1);
+  return `<div class="section"><h3>Player impact ratings <span class="tag">MODEL</span> <small>— points per 100 possessions a player adds vs a typical replacement</small></h3><div class="tw"><table id="impTbl"><thead><tr><th style="text-align:left">Player</th><th>GP</th><th>MPG</th><th>PPG</th><th title="Overall impact estimate: half box score, half on/off (shrunk for sample size)">Impact</th><th title="Box-score part: Game Score per 40 minutes vs the D1 average">Box part</th><th title="On/off part: team net rating with the player on minus off, shrunk toward 0 for small samples">On/off part</th><th>Net on</th><th>Net off</th><th title="How much the team's projection drops if this player sits (impact × share of minutes)">If out</th></tr></thead><tbody>
+    ${list.map(([pid, p]) => `<tr><td style="text-align:left"><span class="tlink" data-player="${esc(pid)}" data-pteam="${esc(teamId)}" data-pname="${esc(p.n)}">${esc(p.n)}</span> <small class="na" style="font-style:normal">${esc(p.pos || '')}</small></td><td class="num">${p.gp}</td><td class="num">${N(p.mpg)}</td><td class="num">${N(p.pts/p.gp)}</td><td class="num"><b class="${p.imp > 2 ? 'good' : p.imp < -2 ? 'bad' : ''}">${p.imp != null ? sgn(p.imp) : '—'}</b></td><td class="num">${p.box != null ? sgn(p.box) : '—'}</td><td class="num">${p.oo != null ? sgn(p.oo) : '—'}</td><td class="num">${p.onNet != null ? sgn(p.onNet) : '—'}</td><td class="num">${p.offNet != null ? sgn(p.offNet) : '—'}</td><td class="num">${p.imp != null ? sgn(-p.imp*Math.min(1, p.mpg/40)) : '—'}</td></tr>`).join('')}
+  </tbody></table></div><div class="note">A rough, early-season estimate that firms up with games played. On/off needs games where ESPN logs substitutions. “If out” is what the model subtracts from the team's rating when the injury report lists the player out.</div></div>`;
 }
 
 /* ---------- Season lineups & on/off (team pages) ---------- */
@@ -2204,7 +2335,8 @@ async function renderTeam(){
   // remaining strength of schedule from upcoming D1 opponents' ratings
   const RT = S.ratings && S.ratings.teams; const fut = games.filter(gm => !gm.done && RT && RT[gm.opId]);
   const remSos = fut.length ? mean(fut.map(gm => RT[gm.opId].net)) : null, remN = fut.length, remRk = null, remOf = null;
-  let trendHtml = '<div class="note">Loading…</div>', rosterHtml = '<div class="note">Loading…</div>', lineupHtml = '';
+  let trendHtml = '<div class="note">Loading…</div>', rosterHtml = '<div class="note">Loading…</div>', lineupHtml = '', impactHtml = '';
+  loadPlayersDB().then(DB2 => { impactHtml = impactTable(DB2, id); if (S.view === 'team' && S.teamView === id) draw(); });
   const LU = { units: {}, players: {}, team: null, names: {}, done: 0, withSubs: 0, total: 0, loading: true };
   const buildLineupHtml = () => seasonLineupHtml(LU, id);
   const draw = () => {
@@ -2233,13 +2365,15 @@ async function renderTeam(){
         ${R && R.sos != null ? `<div class="tile"><span>Strength of schedule</span><b>${sgn(R.sos)}</b><em>#${R.sosRk || '—'} toughest so far (avg opponent net rating)</em></div>` : ''}
         ${remSos != null ? `<div class="tile"><span>Remaining schedule</span><b>${sgn(remSos)}</b><em>avg net rating of ${remN} remaining D1 opponents${remRk ? ` · #${remRk} of ${remOf}` : ''}</em></div>` : ''}
         ${R && R.cl ? `<div class="tile"><span>Clutch</span><b>${R.cl.w}-${R.cl.l}</b><em>${R.cl.g} clutch games · net ${R.cl.o != null && R.cl.d != null ? sgn(R.cl.o - R.cl.d) : NA}/100</em></div>` : ''}
+        ${R && R.form ? `<div class="tile"><span>Recent form (last ${R.form.gp})</span><b class="${R.form.net > R.net + 2 ? 'good' : R.form.net < R.net - 2 ? 'bad' : ''}">${sgn(R.form.net)}</b><em>#${R.form.rk} · season ${sgn(R.net)} · off ${R.form.o} · def ${R.form.d}</em></div>` : ''}
+        ${R && R.style ? `<div class="tile"><span>Transition</span><b>${pct(R.style.trPct, 0)}</b><em>of possessions · ${R.style.trPPP != null ? R.style.trPPP.toFixed(2) : '—'} pts each vs ${R.style.hcPPP != null ? R.style.hcPPP.toFixed(2) : '—'} half-court</em></div>` : ''}
         ${R && R.half ? `<div class="tile"><span>Halftime adjustment</span><b class="${R.half.adj > 0 ? 'good' : R.half.adj < 0 ? 'bad' : ''}">${sgn(R.half.adj)}</b><em>${sgn(R.half.h1)} in 1H, ${sgn(R.half.h2)} in 2H (avg margin)</em></div>` : ''}
       </div></div>
       <div class="section"><h3>Schedule & results <small>— spread shown for ${esc(n.abbr || n.name)}; lines are the pregame close ESPN shows from DraftKings</small></h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opponent</th><th style="text-align:left">Result</th><th>Spread</th><th>ATS</th><th>Total</th><th>O/U</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="na">No games found</td></tr>'}</tbody></table></div>
       <div class="note">“n/a” means no line was posted for that game (common against non-D1 opponents and some small-conference games).</div></div>
       <div class="two"><div class="section"><h3>Rating trend <small>— Hoops Lab net rating by day</small></h3>${trendHtml}</div>
-      <div class="section"><h3>Roster <small>— click a player for their page</small></h3>${rosterHtml}</div></div>${lineupHtml}`;
-    makeSortable(document.getElementById('luTbl'), 'lu-' + id); makeSortable(document.getElementById('ooTbl'), 'oo-' + id);
+      <div class="section"><h3>Roster <small>— click a player for their page</small></h3>${rosterHtml}</div></div>${impactHtml}${lineupHtml}`;
+    makeSortable(document.getElementById('luTbl'), 'lu-' + id); makeSortable(document.getElementById('impTbl'), 'imp-' + id); makeSortable(document.getElementById('ooTbl'), 'oo-' + id);
     const mm = document.getElementById('luMin'); if (mm) mm.onchange = e => { S.luMin = +e.target.value; lineupHtml = buildLineupHtml(); draw(); };
   };
   draw();
@@ -2382,6 +2516,33 @@ async function renderPerf(){
   const lucky = half.filter(r => r.naiveErr != null);
   const list = finals.sort((a, b) => String(b.day || '').localeCompare(String(a.day || '')) || (b.updated || 0) - (a.updated || 0)).slice(0, 200).map(g => `<tr class="gl" data-hist="${g.gid}" data-day="${g.day || ''}" style="cursor:pointer"><td>${esc(g.day || '')}</td><td style="text-align:left">${esc(g.away)} ${g.a} @ ${esc(g.home)} ${g.h}</td><td style="text-align:left">${esc(g.conf || '')}</td><td class="num">${g.n ?? '—'}</td><td class="num">${g.pregameLine?.total ?? NA}</td></tr>`).join('');
   const nSrv = finals.filter(g => g.src === 'collector').length;
+  await syncServer();
+  // ---- self-calibration panel
+  const CD = CAL.data, need = { mktW: 150, h1: 300, hca: 250, luck: 600 };
+  const calRow = (label, key, fmt, defV, desc) => { const c = CD && CD[key]; return `<tr><td>${label}<div class="note" style="margin:0">${desc}</div></td><td class="num">${fmt(defV)}</td><td class="num">${c ? fmt(c.value) : '—'}</td><td class="num">${c ? c.n : 0}</td><td>${c && c.use ? '<b class="good">In use</b>' : `<span class="na" style="font-style:normal">Collecting (needs ${need[key]})</span>`}</td></tr>`; };
+  const lf = v => v ? `3P ${Math.round(v.three*100)}% · FT ${Math.round(v.ft*100)}% · 2P ${Math.round(v.two*100)}%` : '—';
+  const calHtml = `<div class="section"><h3>Self-calibration <small>— model settings re-fit from logged results ${CD ? '· updated ' + ago(CD.updated) + ' from ' + CD.games + ' games' : ''}</small></h3>
+    <table><thead><tr><th>Setting</th><th>Default</th><th>Fitted from data</th><th>Sample</th><th>Status</th></tr></thead><tbody>
+    ${calRow('Market vs ratings blend', 'mktW', v => v == null ? '—' : Math.round(v*100) + '% market', CAL_DEFAULTS.mktW, 'How much the pregame projection leans on the sportsbook line vs Hoops Lab ratings (best fit to final margins).')}
+    ${calRow('First-half scoring factor', 'h1', v => v == null ? '—' : v.toFixed(3), CAL_DEFAULTS.h1, 'First-half points ÷ half of regulation points.')}
+    ${calRow('Home-court advantage', 'hca', v => v == null ? '—' : v.toFixed(2) + ' pts', CAL_DEFAULTS.hca, 'Average home margin beyond what the ratings expect on a neutral floor.')}
+    ${calRow('Luck share of shooting swings', 'luck', lf, CAL_DEFAULTS.luck, 'Share of game-to-game shooting variation that is pure chance (used by the luck model).')}
+    </tbody></table><div class="note">A fitted value only replaces the default once its sample is large enough, so early-season noise can't throw the model off.</div></div>`;
+  // ---- schedule spots
+  const SP = CD && CD.spots;
+  const spRows = (obj, order, lab) => order.filter(k => obj && obj[k]).map(k => `<tr><td>${lab(k)}</td><td class="num">${obj[k].n}</td><td class="num"><b class="${obj[k].eff > 1 ? 'good' : obj[k].eff < -1 ? 'bad' : ''}">${sgn(obj[k].eff)}</b></td><td class="num">${sgn(obj[k].eff*obj[k].n/(obj[k].n + 200))}</td></tr>`).join('');
+  const spotHtml = `<div class="section"><h3>Schedule spots <small>— home team's result vs what the ratings expected</small></h3>${SP ? `<div class="two"><div><table><thead><tr><th>Rest difference (home − away days)</th><th>Games</th><th>Effect</th><th title="Effect after shrinking toward zero for sample size; this is what the model applies">Applied</th></tr></thead><tbody>${spRows(SP.rest, ['≤-2', '-1', '0', '+1', '≥+2'], k => k)}</tbody></table></div>
+    <div><table><thead><tr><th>Away team's road-trip game #</th><th>Games</th><th>Effect</th><th>Applied</th></tr></thead><tbody>${spRows(SP.road, ['1', '2', '3+'], k => k === '1' ? '1st road game' : k === '2' ? '2nd straight' : '3rd+ straight')}</tbody></table></div></div>
+    <div class="note">Positive = home team did better than expected. Travel distance and time zones aren't included because ESPN's feed doesn't give venue coordinates.</div>` : '<div class="note">Builds as the collector logs games.</div>'}</div>`;
+  // ---- closing line value
+  const cl = finals.filter(g => g.clv);
+  const clvBlock = (key, label) => { const arr = cl.map(g => g.clv[key]).filter(Boolean); if (!arr.length) return `<div><h4 style="margin:0 0 6px">${label}</h4><div class="note">No tracked games yet.</div></div>`;
+    const rec = a => { const w = a.filter(x => x.res === 'W').length, l = a.filter(x => x.res === 'L').length, pu = a.filter(x => x.res === 'P').length; return `${w}-${l}${pu ? '-' + pu : ''}${w + l ? ` (${Math.round(w/(w + l)*100)}%)` : ''}`; };
+    const bucket = [['All', () => true], ['Edge < 2', x => x.edge < 2], ['Edge 2–4', x => x.edge >= 2 && x.edge < 4], ['Edge 4+', x => x.edge >= 4]];
+    return `<div><h4 style="margin:0 0 6px">${label}</h4><table><thead><tr><th>Model lean</th><th>Games</th><th title="Average points the line moved toward the model's side between the first pregame number and the close">Avg CLV</th><th title="Share of games where the line moved toward the model">Beat close</th><th title="Record of the model's side against the line it was picked at">Record</th></tr></thead><tbody>
+      ${bucket.map(([n, f]) => { const a = arr.filter(f); return a.length ? `<tr><td>${n}</td><td class="num">${a.length}</td><td class="num"><b class="${mean(a.map(x => x.clv)) > 0 ? 'good' : 'bad'}">${sgn(mean(a.map(x => x.clv)), 2)}</b></td><td class="num">${pct(a.filter(x => x.clv > 0).length/a.length, 0)}</td><td class="num">${rec(a)}</td></tr>` : ''; }).join('')}</tbody></table></div>`; };
+  const clvHtml = `<div class="section"><h3>Closing line value <small>— did the line move toward the model's side before tip-off?</small></h3><div class="two">${clvBlock('sp', 'Spreads')}${clvBlock('to', 'Totals')}</div>
+    <div class="note">The model's "lean" is its side at the first pregame line the collector saw; CLV compares that number with the closing line from the same book. Consistently positive CLV is the best long-run sign of a real edge — records alone take hundreds of games to mean much. This is tracking, not betting advice.</div></div>`;
   const h1Rows = finals.filter(g => g.h1H != null && g.h1A != null && g.cps && g.cps.Pregame && g.cps.Pregame.projH1T != null).map(g => ({ err: g.cps.Pregame.projH1T - (g.h1H + g.h1A), lineErr: g.cps.Pregame.lineH1Total != null ? g.cps.Pregame.lineH1Total - (g.h1H + g.h1A) : null, errM: g.cps.Pregame.projH1M - (g.h1H - g.h1A) }));
   const h1Sec = `<div class="section"><h3>First-half projections <small>(pregame)</small></h3>${h1Rows.length ? `<table><tbody><tr><td>Games</td><td class="num">${h1Rows.length}</td></tr><tr><td>Model 1H total MAE</td><td class="num">${f1(mae(h1Rows.map(r => r.err)))}</td></tr><tr><td>Book 1H total MAE</td><td class="num">${f1(mae(h1Rows.filter(r => r.lineErr != null).map(r => r.lineErr)))}</td></tr><tr><td>Model 1H margin MAE</td><td class="num">${f1(mae(h1Rows.map(r => r.errM)))}</td></tr><tr><td>1H total bias</td><td class="num">${sgn(mean(h1Rows.map(r => r.err)))}</td></tr></tbody></table>` : '<div class="note">Not enough data yet (comes from the background collector).</div>'}</div>`;
   m.innerHTML = `<div class="notice">${server ? `<b>${nSrv}</b> games from the background collector (every game, saved about every 5 minutes)${finals.length - nSrv ? ` + <b>${finals.length - nSrv}</b> seen live in this browser` : ''}. ${S.srvStatus ? `Collector last ran ${ago(Date.parse(S.srvStatus.lastRun))}.` : ''}` : `Background collector history not found${SRV.base ? '' : ' (open the dashboard from your GitHub Pages address to use it)'} — showing only games this browser saw live.`}</div>
@@ -2390,7 +2551,7 @@ async function renderPerf(){
   <div class="two"><div class="section"><h3>Win probability calibration</h3>${calChart || '<div class="note">Not enough data yet.</div>'}</div>
   <div><div class="section"><h3>Luck-adjustment check (halftime)</h3>${lucky.length ? `<table><tbody><tr><td>Games</td><td class="num">${lucky.length}</td></tr><tr><td>Luck-adjusted model total MAE</td><td class="num">${f1(mae(lucky.map(x => x.errT)))}</td></tr><tr><td>Naive extrapolation MAE</td><td class="num">${f1(mae(lucky.map(x => x.naiveErr)))}</td></tr></tbody></table><div class="note">If the luck adjustment is working, the model's error should be smaller than the naive extrapolation's.</div>` : '<div class="note">Not enough data yet.</div>'}</div>
   <div class="section"><h3>By situation</h3><table><thead><tr><th></th><th>N</th><th>Total MAE</th><th>Margin MAE</th><th>Brier</th></tr></thead><tbody>${sit}</tbody></table></div></div></div>
-  ${h1Sec}
+  ${calHtml}${clvHtml}${spotHtml}${h1Sec}
   <div class="section"><h3>By conference <small>(halftime projections, home team's conference)</small></h3>${confRows ? `<table><thead><tr><th>Conference</th><th>Games</th><th>Total MAE</th><th>Margin MAE</th><th>Brier</th></tr></thead><tbody>${confRows}</tbody></table>` : '<div class="note">Not enough data yet.</div>'}</div>
   <div class="section"><h3>Review a past game <small>— click to open the scoreboard on that date with the game's saved projections</small></h3>${list ? `<div class="tw"><table><thead><tr><th>Date</th><th>Game</th><th>Conf</th><th>Snapshots</th><th>Pregame total</th></tr></thead><tbody>${list}</tbody></table></div>` : '<div class="note">Nothing stored yet.</div>'}</div>`;
   renderStatus();
@@ -2477,6 +2638,7 @@ document.addEventListener('click', e => {
   const ss = t.closest('[data-shotside]'); if (ss){ S.shotSide = ss.dataset.shotside; renderDetail(); return; }
   const pl = t.closest('[data-player]'); if (pl){ e.stopPropagation(); closeGame(); openPlayer(pl.dataset.player, pl.dataset.pteam, pl.dataset.pname); return; }
   const bm = t.closest('[data-boxmode]'); if (bm){ S.boxMode = bm.dataset.boxmode; renderDetail(); return; }
+  const fm = t.closest('[data-ffmode]'); if (fm){ S.ffMode = fm.dataset.ffmode; renderRank(); return; }
   const rt = t.closest('[data-ranktab]'); if (rt){ S.rankTab = rt.dataset.ranktab; renderRank(); return; }
   const cv = t.closest('[data-cv]'); if (cv){ S.cardView = cv.dataset.cv; try { localStorage.setItem('hl.cardView', S.cardView); } catch {} syncCv(); renderBoard(); if (S.cardView === 'stats') refreshSummaries(); return; }
   const st = t.closest('[data-st]'); if (st){ S.filter.st = st.dataset.st; document.querySelectorAll('[data-st]').forEach(b => b.classList.toggle('on', b === st)); renderBoard(); return; }
