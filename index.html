@@ -1008,14 +1008,17 @@ function rotation(det, g){
     on.filter(x => x.id !== keep).sort((x, y) => (x.lastAct ?? x.since ?? 0) - (y.lastAct ?? y.since ?? 0)).slice(0, on.length - 5).forEach(x => { x.on = false; x.outAt = el; }); };
   // time and points while each player / five-man unit is on the floor
   let lastEl = 0, pH = 0, pA = 0; const units = { h: {}, a: {} }, team = { h: { pf: 0, pa: 0, sec: 0 }, a: { pf: 0, pa: 0, sec: 0 } };
-  for (const sd of ['h', 'a']) for (const x of Object.values(st[sd])){ x.secOn = 0; x.pf = 0; x.pa = 0; }
+  const box0 = () => ({ poss: 0, fga: 0, fgm: 0, tpm: 0, fta: 0, ftm: 0, to: 0, orb: 0, drb: 0 });
+  for (const sd of ['h', 'a']) for (const x of Object.values(st[sd])){ x.secOn = 0; x.pf = 0; x.pa = 0; x.o = box0(); x.d = box0(); }
+  const team2 = { h: { o: box0(), d: box0() }, a: { o: box0(), d: box0() } };
+  let lastOff = null, lastPer = null;
   const accrue = p => {
     const dt = Math.max(0, p.el - lastEl), dh = p.h != null ? Math.max(0, p.h - pH) : 0, da = p.a != null ? Math.max(0, p.a - pA) : 0;
     for (const sd of ['h', 'a']){
       const on = Object.values(st[sd]).filter(x => x.on), us = sd === 'h' ? dh : da, them = sd === 'h' ? da : dh;
       team[sd].sec += dt; team[sd].pf += us; team[sd].pa += them;
       for (const x of on){ x.secOn += dt; x.pf += us; x.pa += them; }
-      if (on.length === 5){ const k = on.map(x => x.id).sort().join(','); const u = units[sd][k] = units[sd][k] || { ids: on.map(x => x.id), sec: 0, pf: 0, pa: 0 }; u.sec += dt; u.pf += us; u.pa += them; }
+      if (on.length === 5){ const k = on.map(x => x.id).sort().join(','); const u = units[sd][k] = units[sd][k] || { ids: on.map(x => x.id), sec: 0, pf: 0, pa: 0, o: box0(), d: box0() }; u.sec += dt; u.pf += us; u.pa += them; }
     }
     lastEl = Math.max(lastEl, p.el); if (p.h != null) pH = Math.max(pH, p.h); if (p.a != null) pA = Math.max(pA, p.a);
   };
@@ -1035,11 +1038,27 @@ function rotation(det, g){
     for (const id of p.ath || []){ const sd = sideOf(id); if (!sd) continue; const x = st[sd][id];
       if (!x.on){ put(sd, id, true, p.el, true); enforce(sd, id, p.el); }
       x.lastAct = p.el; }
+    // box events credited to whoever is on the floor (offense for the acting team, defense for the other)
+    if (p.period !== lastPer){ lastPer = p.period; lastOff = null; }
+    const ts = p.team === g.home.id ? 'h' : p.team === g.away.id ? 'a' : null;
+    if (ts && (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to' || p.kind === 'orb' || p.kind === 'drb')){
+      const os = ts === 'h' ? 'a' : 'h';
+      const newPoss = (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to') && lastOff !== ts; if (p.kind === 'fg' || p.kind === 'ft' || p.kind === 'to') lastOff = ts;
+      const add = b => { if (newPoss) b.poss++;
+        if (p.kind === 'fg'){ b.fga++; if (p.made){ b.fgm++; if (p.three) b.tpm++; } } else if (p.kind === 'ft'){ b.fta++; if (p.made) b.ftm++; }
+        else if (p.kind === 'to') b.to++; else if (p.kind === 'orb') b.orb++; else if (p.kind === 'drb') b.drb++; };
+      add(team2[ts].o); add(team2[os].d);
+      const onT = Object.values(st[ts]).filter(x => x.on), onO = Object.values(st[os]).filter(x => x.on);
+      onT.forEach(x => add(x.o)); onO.forEach(x => add(x.d));
+      if (onT.length === 5){ const k = onT.map(x => x.id).sort().join(','); if (units[ts][k]) add(units[ts][k].o); }
+      if (onO.length === 5){ const k = onO.map(x => x.id).sort().join(','); if (units[os][k]) add(units[os][k].d); }
+    }
   }
   const now = gameElapsed(g), fin = g.status === 'post';
   const view = sd => Object.values(st[sd]).map(x => Object.assign({}, x, { stint: x.on && x.since != null ? now - x.since : null, benchFor: !x.on && x.outAt != null ? now - x.outAt : null }));
   const unitList = sd => Object.values(units[sd]).filter(u => u.sec >= 30).sort((x, y) => y.sec - x.sec);
-  return { available: subs.length >= 6, subs: subs.length, now, fin, h: view('h'), a: view('a'), units: { h: unitList('h'), a: unitList('a') }, team };
+  team.h.o = team2.h.o; team.h.d = team2.h.d; team.a.o = team2.a.o; team.a.d = team2.a.d;
+  return { available: subs.length >= 6, subs: subs.length, now, fin, h: view('h'), a: view('a'), units: { h: unitList('h'), a: unitList('a') }, allUnits: units, team };
 }
 
 /* Clutch = last 5:00 of regulation or any overtime with the score within 5 (from play-by-play) */
@@ -2029,6 +2048,48 @@ function renderStyleMap(m, T, rows, confs, cf, q){
   document.getElementById('rankConf').onchange = e => { S.rankConf = e.target.value; renderRank(); };
 }
 
+/* ---------- Season lineups & on/off (team pages) ---------- */
+function unitMetrics(sec, pf, pa, o, d){
+  const r = (a, b) => b ? a/b : null;
+  return { min: sec/60, pm: pf - pa, ortg: r(pf, o.poss)*100 || null, drtg: r(pa, d.poss)*100 || null,
+    pace: sec >= 60 ? ((o.poss || 0) + (d.poss || 0))/2/sec*2400 : null,
+    efg: r((o.fgm || 0) + 0.5*(o.tpm || 0), o.fga), oefg: r((d.fgm || 0) + 0.5*(d.tpm || 0), d.fga),
+    tov: r(o.to, o.poss), otov: r(d.to, d.poss), orb: r(o.orb, (o.orb || 0) + (d.drb || 0)), drb: r(o.drb, (o.drb || 0) + (d.orb || 0)), ftr: r(o.fta, o.fga) };
+}
+function seasonLineupHtml(LU, id){
+  const head = `<div class="section"><h3>Season lineups & on/off <small>— every game rebuilt from ESPN play-by-play substitutions · updates after each game</small></h3>`;
+  if (!LU.total) return head + '<div class="note">No finished games yet.</div></div>';
+  const cov = `<div class="note" style="margin-bottom:6px">${LU.loading ? `Loading games… ${LU.done}/${LU.total} · ` : ''}Lineup data from <b>${LU.withSubs}</b> of ${LU.total} finished games${LU.done === LU.total && LU.withSubs < LU.total ? ` (ESPN didn't log substitutions in ${LU.total - LU.withSubs})` : ''}.</div>`;
+  if (!LU.withSubs) return head + cov + (LU.loading ? '' : '<div class="note">None of this team’s games have substitution data yet, so lineups can’t be rebuilt.</div>') + '</div>';
+  const nm = i => esc(LU.names[i] || i), minMin = S.luMin ?? 10;
+  const units = Object.values(LU.units).filter(u => u.sec >= minMin*60).sort((a, b) => b.sec - a.sec);
+  const totalSec = LU.team ? LU.team.sec : 1;
+  const top = Object.values(LU.units).sort((a, b) => b.sec - a.sec)[0];
+  const P = x => x == null ? '—' : pct(x), N = (x, d = 1) => x == null || !isFinite(x) ? '—' : x.toFixed(d), SG = x => x == null || !isFinite(x) ? '—' : sgn(x);
+  const uRows = units.map(u => { const M = unitMetrics(u.sec, u.pf, u.pa, u.o, u.d), net = M.ortg != null && M.drtg != null ? M.ortg - M.drtg : null;
+    return `<tr><td style="white-space:normal;text-align:left">${u.starts ? '⭐ ' : ''}${u.ids.map(nm).join(', ')}</td><td class="num">${u.gp}</td><td class="num">${N(M.min)}</td><td class="num">${pct(u.sec/totalSec, 0)}</td><td class="num"><b class="${M.pm > 0 ? 'good' : M.pm < 0 ? 'bad' : ''}">${sgn(M.pm, 0)}</b></td><td class="num"><b>${SG(net)}</b></td><td class="num">${N(M.ortg)}</td><td class="num">${N(M.drtg)}</td><td class="num">${N(M.pace)}</td><td class="num">${P(M.efg)}</td><td class="num">${P(M.oefg)}</td><td class="num">${P(M.tov)}</td><td class="num">${P(M.otov)}</td><td class="num">${P(M.orb)}</td><td class="num">${P(M.drb)}</td><td class="num">${P(M.ftr)}</td></tr>`; }).join('');
+  const pRows = Object.entries(LU.players).sort((a, b) => b[1].sec - a[1].sec).map(([pid, x]) => {
+    const on = unitMetrics(x.sec, x.pf, x.pa, x.o, x.d), offO = {}, offD = {};
+    for (const k in x.to) offO[k] = x.to[k] - (x.o[k] || 0); for (const k in x.td) offD[k] = x.td[k] - (x.d[k] || 0);
+    const off = unitMetrics(x.tsec - x.sec, x.tpf - x.pf, x.tpa - x.pa, offO, offD);
+    const nOn = on.ortg != null && on.drtg != null ? on.ortg - on.drtg : null, nOff = off.ortg != null && off.drtg != null && (x.tsec - x.sec) >= 300 ? off.ortg - off.drtg : null;
+    return `<tr><td style="text-align:left"><span class="tlink" data-player="${esc(pid)}" data-pteam="${esc(id)}" data-pname="${esc(LU.names[pid] || '')}">${nm(pid)}</span></td><td class="num">${x.gp}</td><td class="num">${N(x.sec/60)}</td><td class="num">${pct(x.sec/(x.tsec || 1), 0)}</td><td class="num">${sgn(x.pf - x.pa, 0)}</td>
+      <td class="num"><b>${SG(nOn)}</b></td><td class="num">${SG(nOff)}</td><td class="num"><b class="${nOn != null && nOff != null ? (nOn - nOff > 0 ? 'good' : 'bad') : ''}">${nOn != null && nOff != null ? sgn(nOn - nOff) : '—'}</b></td>
+      <td class="num">${N(on.ortg)}</td><td class="num">${N(off.ortg)}</td><td class="num">${N(on.drtg)}</td><td class="num">${N(off.drtg)}</td><td class="num">${P(on.efg)}</td><td class="num">${P(on.oefg)}</td></tr>`; }).join('');
+  const T = LU.team ? unitMetrics(LU.team.sec, LU.team.pf, LU.team.pa, LU.team.o, LU.team.d) : null;
+  const topLine = top ? (() => { const M = unitMetrics(top.sec, top.pf, top.pa, top.o, top.d); return `<div class="tiles" style="margin-bottom:10px">
+      <div class="tile" style="grid-column:span 2"><span>Most-used lineup${top.starts ? ' ⭐ (starting five)' : ''}</span><b style="font-size:15px">${top.ids.map(nm).join(', ')}</b><em>${N(M.min)} min together in ${top.gp} games · ${pct(top.sec/totalSec, 0)} of all minutes</em></div>
+      <div class="tile"><span>Its net rating</span><b class="${M.ortg - M.drtg > 0 ? 'good' : 'bad'}">${M.ortg != null && M.drtg != null ? sgn(M.ortg - M.drtg) : '—'}</b><em>per 100 poss · ${sgn(M.pm, 0)} total</em></div>
+      <div class="tile"><span>Team overall (tracked games)</span><b>${T && T.ortg != null ? sgn(T.ortg - T.drtg) : '—'}</b><em>off ${N(T && T.ortg)} · def ${N(T && T.drtg)} · pace ${N(T && T.pace)}</em></div>
+      <div class="tile"><span>Lineups used</span><b>${Object.keys(LU.units).length}</b><em>${units.length} with ${minMin}+ minutes</em></div></div>`; })() : '';
+  return head + cov + topLine + `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><h3 style="margin:0">Five-man lineups</h3><label class="note" style="margin:0">Minimum minutes <select id="luMin">${[0, 5, 10, 20, 40].map(v => `<option value="${v}" ${v === minMin ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+    <div class="tw"><table id="luTbl"><thead><tr><th style="text-align:left">Lineup (⭐ = started a game)</th><th title="Games this five played together">GP</th><th>MIN</th><th title="Share of the team's tracked minutes">Share</th><th>+/-</th><th title="Offensive minus defensive rating (points per 100 possessions)">Net/100</th><th title="Points scored per 100 possessions">ORtg</th><th title="Points allowed per 100 possessions">DRtg</th><th title="Possessions per 40 minutes">Pace</th><th>eFG%</th><th title="Opponent eFG% with this lineup on the floor">Opp eFG%</th><th>TO%</th><th title="Opponent turnover rate forced">Opp TO%</th><th>OR%</th><th>DR%</th><th>FTA/FGA</th></tr></thead><tbody>${uRows || '<tr><td colspan="16" class="na">No lineup has reached the minimum minutes yet.</td></tr>'}</tbody></table></div>
+    <h3 style="margin-top:14px">Player on/off <small>— team per 100 possessions with each player on vs off the floor</small></h3>
+    <div class="tw"><table id="ooTbl"><thead><tr><th style="text-align:left">Player</th><th>GP</th><th>MIN</th><th title="Share of team minutes on the floor">Floor %</th><th>+/-</th><th>Net on</th><th>Net off</th><th title="Net on minus net off">On/off swing</th><th>ORtg on</th><th>ORtg off</th><th>DRtg on</th><th>DRtg off</th><th>eFG% on</th><th>Opp eFG% on</th></tr></thead><tbody>${pRows}</tbody></table></div>
+    <div class="note">Possessions are counted from play-by-play. Small samples swing a lot — treat lineups under ~20 minutes and on/off splits with little "off" time as noise. Click any column to sort.</div></div>`;
+}
+
 /* ---------- click-to-sort tables (sort choice is remembered per table) ---------- */
 function cellSortVal(td){
   const t = (td.textContent || '').trim();
@@ -2089,7 +2150,9 @@ async function renderTeam(){
   // remaining strength of schedule from upcoming D1 opponents' ratings
   const RT = S.ratings && S.ratings.teams; const fut = games.filter(gm => !gm.done && RT && RT[gm.opId]);
   const remSos = fut.length ? mean(fut.map(gm => RT[gm.opId].net)) : null, remN = fut.length, remRk = null, remOf = null;
-  let trendHtml = '<div class="note">Loading…</div>', rosterHtml = '<div class="note">Loading…</div>';
+  let trendHtml = '<div class="note">Loading…</div>', rosterHtml = '<div class="note">Loading…</div>', lineupHtml = '';
+  const LU = { units: {}, players: {}, team: null, names: {}, done: 0, withSubs: 0, total: 0, loading: true };
+  const buildLineupHtml = () => seasonLineupHtml(LU, id);
   const draw = () => {
     let w = 0, l = 0, ac = 0, al = 0, ap = 0, ov = 0, un = 0, pu = 0, cm = [];
     const rows = games.map(gm => {
@@ -2121,7 +2184,9 @@ async function renderTeam(){
       <div class="section"><h3>Schedule & results <small>— spread shown for ${esc(n.abbr || n.name)}; lines are the pregame close ESPN shows from DraftKings</small></h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opponent</th><th style="text-align:left">Result</th><th>Spread</th><th>ATS</th><th>Total</th><th>O/U</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="na">No games found</td></tr>'}</tbody></table></div>
       <div class="note">“n/a” means no line was posted for that game (common against non-D1 opponents and some small-conference games).</div></div>
       <div class="two"><div class="section"><h3>Rating trend <small>— Hoops Lab net rating by day</small></h3>${trendHtml}</div>
-      <div class="section"><h3>Roster <small>— click a player for their page</small></h3>${rosterHtml}</div></div>`;
+      <div class="section"><h3>Roster <small>— click a player for their page</small></h3>${rosterHtml}</div></div>${lineupHtml}`;
+    makeSortable(document.getElementById('luTbl'), 'lu-' + id); makeSortable(document.getElementById('ooTbl'), 'oo-' + id);
+    const mm = document.getElementById('luMin'); if (mm) mm.onchange = e => { S.luMin = +e.target.value; lineupHtml = buildLineupHtml(); draw(); };
   };
   draw();
   // rating history (from the collector) + roster (ESPN)
@@ -2136,6 +2201,28 @@ async function renderTeam(){
     let list = r.athletes || []; if (list.length && list[0].items) list = list.flatMap(x => x.items || []);
     rosterHtml = list.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${list.map(a => `<span class="btn sm tlink" style="text-decoration:none" data-player="${esc(a.id)}" data-pteam="${esc(id)}" data-pname="${esc(a.displayName || a.fullName || '')}">${a.jersey ? '#' + esc(a.jersey) + ' ' : ''}${esc(a.displayName || a.fullName || '?')} <small class="na" style="font-style:normal">${esc(a.position?.abbreviation || '')}</small></span>`).join('')}</div>` : '<div class="note">Roster not available.</div>';
     if (S.view === 'team' && S.teamView === id) draw(); }).catch(() => { rosterHtml = '<div class="note">Roster not available from ESPN right now.</div>'; if (S.view === 'team' && S.teamView === id) draw(); });
+  // season lineups + on/off: rebuild every finished game's rotation from its play-by-play
+  const doneGames = games.filter(gm => gm.done); LU.total = doneGames.length;
+  lineupHtml = buildLineupHtml(); draw();
+  Promise.all(doneGames.map(gm => gameForPlayer(gm.ev).then(G => {
+    const homeId = gm.isHome ? id : gm.opId, awayId = gm.isHome ? gm.opId : id;
+    const pH = G.groups.find(x => x.teamId === homeId), pA = G.groups.find(x => x.teamId === awayId);
+    if (!pH || !pA) return;
+    const pg = { gid: gm.ev, status: 'post', period: Math.max(2, ...G.plays.map(p => p.period || 1)), clock: 0, home: { id: homeId }, away: { id: awayId } };
+    const rot = rotation({ plays: G.plays, pH, pA }, pg); if (!rot) return;
+    const sd = gm.isHome ? 'h' : 'a', mine = gm.isHome ? pH : pA;
+    for (const r of mine.rows) LU.names[r.id] = r.short || r.name;
+    if (!rot.available) return; LU.withSubs++;
+    const starters = mine.rows.filter(r => r.starter).map(r => String(r.id)).sort().join(',');
+    const addBox = (a, b) => { for (const k in b) a[k] = (a[k] || 0) + b[k]; };
+    for (const [k, u] of Object.entries(rot.allUnits[sd])){ const A = LU.units[k] = LU.units[k] || { ids: u.ids, sec: 0, pf: 0, pa: 0, o: {}, d: {}, gp: 0, starts: 0 };
+      A.sec += u.sec; A.pf += u.pf; A.pa += u.pa; addBox(A.o, u.o); addBox(A.d, u.d); A.gp++; if (k === starters) A.starts++; }
+    const T = rot.team[sd]; LU.team = LU.team || { sec: 0, pf: 0, pa: 0, o: {}, d: {} }; LU.team.sec += T.sec; LU.team.pf += T.pf; LU.team.pa += T.pa; addBox(LU.team.o, T.o); addBox(LU.team.d, T.d);
+    for (const x of rot[sd]){ if (!x.secOn) continue; const P = LU.players[x.id] = LU.players[x.id] || { sec: 0, pf: 0, pa: 0, o: {}, d: {}, gp: 0, tsec: 0, tpf: 0, tpa: 0, to: {}, td: {} };
+      P.sec += x.secOn; P.pf += x.pf; P.pa += x.pa; addBox(P.o, x.o); addBox(P.d, x.d); P.gp++;
+      P.tsec += T.sec; P.tpf += T.pf; P.tpa += T.pa; addBox(P.to, T.o); addBox(P.td, T.d); }
+  }).catch(() => {}).finally(() => { LU.done++; if (LU.done % 3 === 0 || LU.done === LU.total){ lineupHtml = buildLineupHtml(); if (S.view === 'team' && S.teamView === id) draw(); } }))).then(() => {
+    LU.loading = false; lineupHtml = buildLineupHtml(); if (S.view === 'team' && S.teamView === id) draw(); });
   // fill in lines (closing lines for finished games are cached in this browser)
   let pending = 0; const token = id;
   await Promise.all(games.map(async gm => { if (gm.state === 'pre' && Date.parse(gm.date) - Date.now() > 7*86400e3){ gm.line = null; return; }
