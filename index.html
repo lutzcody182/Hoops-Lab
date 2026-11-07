@@ -1531,6 +1531,7 @@ function betState(b){
 }
 function settleBets(){
   const list = myBets(); let changed = false;
+  for (const b of list) if (!b.homeId){ const g = betGame(b.gid); if (g){ Object.assign(b, { homeId: g.home.id, awayId: g.away.id, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, homeName: g.home.name, awayName: g.away.name }); changed = true; } }
   for (const b of list){ if (b.status !== 'open') continue; const st = betState(b); if (!st.known || !st.final) continue;
     b.status = st.void ? 'push' : st.v > 0 ? 'won' : st.v < 0 ? 'lost' : 'push'; b.settledAt = Date.now(); b.finalText = st.text;
     b.profit = b.status === 'won' ? +payout(b.odds, b.stake).toFixed(2) : b.status === 'lost' ? -b.stake : 0; changed = true; }
@@ -1621,7 +1622,13 @@ async function openBetForm(gid, editId){
 /* ---------- Season bet tracker: by bet type, team, book, month + profit chart ---------- */
 function betTeams(b){
   const [aw, hm] = String(b.match || '').split(' @ ');
-  return { home: { id: b.homeId || 'abbr:' + hm, abbr: b.homeAbbr || hm, name: b.homeName || hm }, away: { id: b.awayId || 'abbr:' + aw, abbr: b.awayAbbr || aw, name: b.awayName || aw } };
+  if (!b.homeId){ const g = betGame(b.gid); if (g) return { home: { id: g.home.id, abbr: g.home.abbr, name: g.home.name }, away: { id: g.away.id, abbr: g.away.abbr, name: g.away.name } };
+    // older bets: find the team id from any other bet or loaded game with the same abbreviation
+    const look = ab => { for (const x of myBets()){ if (x.homeAbbr === ab && x.homeId) return { id: x.homeId, name: x.homeName }; if (x.awayAbbr === ab && x.awayId) return { id: x.awayId, name: x.awayName }; }
+      for (const g of [...S.games.values(), ...S.betGames.values()]) for (const t of [g.home, g.away]) if (t.abbr === ab) return { id: t.id, name: t.name }; return null; };
+    const H = look(hm), A = look(aw);
+    return { home: { id: H ? H.id : 'abbr:' + hm, abbr: hm, name: H ? H.name : hm }, away: { id: A ? A.id : 'abbr:' + aw, abbr: aw, name: A ? A.name : aw } }; }
+  return { home: { id: b.homeId, abbr: b.homeAbbr || hm, name: b.homeName || hm }, away: { id: b.awayId, abbr: b.awayAbbr || aw, name: b.awayName || aw } };
 }
 function betTracker(done){
   const units = [...new Set(done.map(b => b.unit || 'u'))]; if (!done.length) return `<div class="section"><h3>Season tracker</h3><div class="note">Your results by bet type, team, sportsbook and month show up here once bets settle.</div></div>`;
@@ -1642,8 +1649,13 @@ function betTracker(done){
     const T = {}; const get = t => T[t.id] = T[t.id] || { t, on: agg(), vs: agg(), all: agg() };
     for (const b of L){ const tm = betTeams(b);
       for (const t of [tm.home, tm.away]) add(get(t).all, b);
-      if (b.team || b.teamAbbr){ const backed = (b.team && b.team === tm.home.id) || (!b.team && b.teamAbbr === tm.home.abbr) ? tm.home : tm.away, other = backed === tm.home ? tm.away : tm.home;
-        add(get(backed).on, b); add(get(other).vs, b); } }
+      if (b.team || b.teamAbbr){
+        // the team on the ticket: match by id when both sides have ids, otherwise by abbreviation (bets saved before ids were stored)
+        const isHome = (b.team && String(b.team) === String(tm.home.id)) || (b.teamAbbr && b.teamAbbr === tm.home.abbr && b.teamAbbr !== tm.away.abbr);
+        const picked = isHome ? tm.home : tm.away, opp = isHome ? tm.away : tm.home;
+        // a team-total UNDER is a bet against that team's offense, so it counts as "against them"
+        const forTeam = (b.type === 'tt' || b.type === 'h1tt') && b.side === 'u' ? opp : picked, vsTeam = forTeam === picked ? opp : picked;
+        add(get(forTeam).on, b); add(get(vsTeam).vs, b); } }
     const cell = a => a.n ? `${a.w}-${a.l}${a.p ? '-' + a.p : ''} · <b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b>` : '—';
     table = `<thead><tr><th style="text-align:left">Team</th><th title="Every settled bet on games this team played">Bets in their games</th><th>Record</th><th title="Total profit from all bets on this team's games">Profit (all)</th><th title="Spreads, moneylines and team totals where you backed this team">Backing them</th><th title="Spreads, moneylines and team totals where you backed their opponent">Against them</th></tr></thead><tbody>` +
       Object.values(T).sort((a, b) => b.all.profit - a.all.profit).map(x => `<tr><td style="text-align:left">${/^abbr:/.test(x.t.id) ? esc(x.t.name || x.t.abbr) : `<span class="tlink" data-team="${esc(x.t.id)}">${esc(x.t.name || x.t.abbr)}</span>`}</td><td class="num">${x.all.n}</td><td class="num">${x.all.w}-${x.all.l}${x.all.p ? '-' + x.all.p : ''}</td><td class="num"><b class="${x.all.profit > 0 ? 'good' : x.all.profit < 0 ? 'bad' : ''}">${fmtP(x.all.profit)}</b></td><td class="num">${cell(x.on)}</td><td class="num">${cell(x.vs)}</td></tr>`).join('') + '</tbody>';
@@ -1670,7 +1682,7 @@ function betTracker(done){
       <select id="trkRange"><option value="all" ${range === 'all' ? 'selected' : ''}>Whole season</option><option value="30" ${range === '30' ? 'selected' : ''}>Last 30 days</option><option value="7" ${range === '7' ? 'selected' : ''}>Last 7 days</option></select>
       ${units.length > 1 ? `<select id="trkUnit">${units.map(u => `<option value="${u}" ${u === unit ? 'selected' : ''}>${u === '$' ? 'Dollar bets' : 'Unit bets'}</option>`).join('')}</select>` : ''}</div>
     <div class="two"><div class="tw"><table id="trkTbl">${table}</table></div><div><h4 style="margin:0 0 6px">Running profit</h4>${chart}</div></div>
-    <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” / “Against them” only count spreads, moneylines and team totals where you picked a side. ' : ''}Click any column to sort.</div></div>`;
+    <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” = spreads and moneylines on that team plus team-total overs for them; “Against them” = the same bets on their opponent, plus team-total unders on them. ' : ''}Click any column to sort.</div></div>`;
 }
 
 function renderBets(){
