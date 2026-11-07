@@ -1473,6 +1473,7 @@ S.betGames = new Map();
 function betGame(gid){ return S.games.get(gid) || S.betGames.get(gid) || null; }
 const BET_TYPES = { spread: 'Spread', total: 'Total', ml: 'Moneyline', tt: 'Team total', h1spread: '1st-half spread', h1total: '1st-half total', h1tt: '1st-half team total', prop: 'Player prop' };
 const PROP_STATS = { PTS: 'Points', REB: 'Rebounds', AST: 'Assists', '3PM': 'Threes made', PRA: 'Pts + Reb + Ast', 'PR': 'Pts + Reb', 'PA': 'Pts + Ast' };
+function money(v, signed){ v = v || 0; const s2 = '$' + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return signed ? (v > 0 ? '+' : v < 0 ? '−' : '') + s2 : (v < 0 ? '−' : '') + s2; }
 function payout(odds, stake){ odds = num(odds) ?? -110; return odds > 0 ? stake*odds/100 : stake*100/Math.abs(odds); }
 function betLabel(b){
   const ln = v => v > 0 ? '+' + v : String(v);
@@ -1549,9 +1550,9 @@ function betToast(b){
   el.className = 'toast ' + cls;
   el.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px"><b class="big">${head}</b><button class="btn sm" data-closetoast>✕</button></div>
     <div><b>${betLabel(b)}</b> · ${esc(b.match)}</div><div class="note" style="margin-top:2px">${b.finalText || ''}</div>
-    <div style="margin-top:4px">${b.status === 'won' ? `<b class="good">+${b.profit.toFixed(2)} ${esc(b.unit || 'u')}</b>` : b.status === 'lost' ? `<b class="bad">${b.profit.toFixed(2)} ${esc(b.unit || 'u')}</b>` : 'Stake returned'}</div>`;
+    <div style="margin-top:4px">${b.status === 'won' ? `<b class="good">${money(b.profit, true)}</b>` : b.status === 'lost' ? `<b class="bad">${money(b.profit, true)}</b>` : 'Stake returned'}</div>`;
   document.getElementById('toasts').prepend(el);
-  try { if (window.Notification && Notification.permission === 'granted') new Notification(`${head}: ${betLabel(b).replace(/<[^>]+>/g, '')}`, { body: `${b.match} — ${b.status === 'won' ? '+' + b.profit.toFixed(2) : b.status === 'lost' ? b.profit.toFixed(2) : '0'} ${b.unit || 'u'}` }); } catch {}
+  try { if (window.Notification && Notification.permission === 'granted') new Notification(`${head}: ${betLabel(b).replace(/<[^>]+>/g, '')}`, { body: `${b.match} — ${b.status === 'push' ? 'stake returned' : money(b.profit, true)}` }); } catch {}
 }
 function updateBetsNav(){ const n = myBets().filter(b => b.status === 'open').length; const el = document.getElementById('betsNav'); if (el) el.textContent = n ? `My Bets (${n})` : 'My Bets'; }
 /* keep games for open bets on other dates up to date (scores, box scores, projections) */
@@ -1580,7 +1581,7 @@ async function openBetForm(gid, editId){
       <label>Stat</label><select id="bStat">${Object.entries(PROP_STATS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
     <div id="bLineWrap"><label id="bLineLab">Line</label><input type="number" step="0.5" id="bLine"></div>
     <label>Odds (American)</label><input type="number" id="bOdds" value="-110">
-    <div style="display:flex;gap:8px"><div style="flex:1"><label>Stake</label><input type="number" step="0.1" id="bStake" value="1"></div><div style="flex:1"><label>Unit</label><select id="bUnit"><option value="u">units</option><option value="$">$</option></select></div></div>
+    <label>Stake ($)</label><input type="number" step="0.01" min="0" id="bStake" value="${(() => { try { return localStorage.getItem('hl.lastStake') || '10'; } catch { return '10'; } })()}">
     <label>Sportsbook (optional)</label><input type="text" id="bBook" value="${esc(ln ? shortBook(ln.book) : '')}">
     <div style="margin-top:14px;display:flex;gap:8px"><button class="btn on" id="bSave">${edit ? 'Save changes' : 'Save bet'}</button><button class="btn" data-closebet>Cancel</button></div>
     ${edit && edit.status !== 'open' ? `<div class="note">This bet was already settled as <b>${edit.status.toUpperCase()}</b>. Saving re-checks it with your changes and shows a new result banner.</div>` : ''}
@@ -1602,17 +1603,18 @@ async function openBetForm(gid, editId){
   $('bType').onchange = fill; $('bTeam').onchange = fill; $('bSide').onchange = fill; fill();
   if (edit){ // load the saved bet into the form
     $('bType').value = edit.type; if (edit.team) $('bTeam').value = edit.team; if (edit.side) $('bSide').value = edit.side; fill();
-    if (edit.line != null) $('bLine').value = edit.line; $('bOdds').value = edit.odds; $('bStake').value = edit.stake; $('bUnit').value = edit.unit || 'u'; $('bBook').value = edit.book || '';
+    if (edit.line != null) $('bLine').value = edit.line; $('bOdds').value = edit.odds; $('bStake').value = edit.stake; $('bBook').value = edit.book || '';
     if (edit.type === 'prop'){ if ($('bPlayer') && edit.playerId && [...$('bPlayer').options].some(o => o.value === String(edit.playerId))) $('bPlayer').value = edit.playerId; else if ($('bPlayerTxt')) $('bPlayerTxt').value = edit.player || ''; if (edit.stat) $('bStat').value = edit.stat; } }
   $('bSave').onclick = () => {
     const ty = $('bType').value, team = $('bTeam').value, isH = team === g.home.id, line = num($('bLine').value), odds = num($('bOdds').value), stake = num($('bStake').value) || 1;
     if (ty !== 'ml' && line == null){ $('bLine').focus(); return; } if (odds == null || Math.abs(odds) < 100){ $('bOdds').focus(); return; }
     const b = { id: edit ? edit.id : 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), gid: g.gid, day: edit ? edit.day : S.games.has(g.gid) ? S.date : (myBets().find(x => x.gid === g.gid) || {}).day || S.date,
-      match: `${g.away.abbr} @ ${g.home.abbr}`, matchLong: `${g.away.name} @ ${g.home.name}`, homeId: g.home.id, awayId: g.away.id, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, homeName: g.home.name, awayName: g.away.name, date: g.date, type: ty, line: ty === 'ml' ? null : line, odds, stake, unit: $('bUnit').value, book: $('bBook').value.trim(), created: Date.now(), status: 'open' };
+      match: `${g.away.abbr} @ ${g.home.abbr}`, matchLong: `${g.away.name} @ ${g.home.name}`, homeId: g.home.id, awayId: g.away.id, homeAbbr: g.home.abbr, awayAbbr: g.away.abbr, homeName: g.home.name, awayName: g.away.name, date: g.date, type: ty, line: ty === 'ml' ? null : line, odds, stake, unit: '$', book: $('bBook').value.trim(), created: Date.now(), status: 'open' };
     if (['spread', 'ml', 'h1spread', 'tt', 'h1tt'].includes(ty)){ b.team = team; b.teamAbbr = isH ? g.home.abbr : g.away.abbr; }
     if (['total', 'h1total', 'prop', 'tt', 'h1tt'].includes(ty)) b.side = $('bSide').value;
     if (ty === 'prop'){ const sel = $('bPlayer'); if (sel){ b.playerId = sel.value; b.player = sel.selectedOptions[0].dataset.name; } else { b.player = $('bPlayerTxt').value.trim(); if (!b.player) return; } b.stat = $('bStat').value; }
     if (edit){ b.created = edit.created; b.edited = Date.now(); }
+    try { localStorage.setItem('hl.lastStake', String(stake)); } catch {}
     const list = myBets().filter(x => x.id !== b.id); list.push(b); saveBets(list); updateBetsNav(); if (edit) settleBets();
     document.getElementById('betModal').classList.remove('open'); if (S.view === 'board') renderBoard(); if (S.view === 'bets') renderBets();
     if (window.Notification && Notification.permission === 'default'){ /* asked from the My Bets page */ }
@@ -1631,14 +1633,13 @@ function betTeams(b){
   return { home: { id: b.homeId, abbr: b.homeAbbr || hm, name: b.homeName || hm }, away: { id: b.awayId, abbr: b.awayAbbr || aw, name: b.awayName || aw } };
 }
 function betTracker(done){
-  const units = [...new Set(done.map(b => b.unit || 'u'))]; if (!done.length) return `<div class="section"><h3>Season tracker</h3><div class="note">Your results by bet type, team, sportsbook and month show up here once bets settle.</div></div>`;
-  const unit = units.includes(S.trkUnit) ? S.trkUnit : units.includes('u') ? 'u' : units[0];
+  if (!done.length) return `<div class="section"><h3>Season tracker</h3><div class="note">Your results by bet type, team, sportsbook and month show up here once bets settle.</div></div>`;
   const range = S.trkRange || 'all', cut = range === '7' ? Date.now() - 7*86400e3 : range === '30' ? Date.now() - 30*86400e3 : 0;
-  const L = done.filter(b => (b.unit || 'u') === unit && (b.settledAt || 0) >= cut).sort((a, b) => (a.settledAt || 0) - (b.settledAt || 0));
-  const fmtP = v => unit === '$' ? `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}` : `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
+  const L = done.filter(b => (b.settledAt || 0) >= cut).sort((a, b) => (a.settledAt || 0) - (b.settledAt || 0));
+  const fmtP = v => money(v, true);
   const agg = () => ({ n: 0, w: 0, l: 0, p: 0, risk: 0, profit: 0 });
   const add = (a, b, sign = 1) => { a.n++; if (b.status === 'won') a.w++; else if (b.status === 'lost') a.l++; else a.p++; if (b.status !== 'push') a.risk += b.stake; a.profit += sign*(b.profit || 0); };
-  const row = (label, a, extra = '') => `<tr><td style="text-align:left">${label}</td><td class="num">${a.n}</td><td class="num">${a.w}-${a.l}${a.p ? '-' + a.p : ''}</td><td class="num">${a.w + a.l ? pct(a.w/(a.w + a.l), 0) : '—'}</td><td class="num">${unit === '$' ? '$' + a.risk.toFixed(2) : a.risk.toFixed(2) + 'u'}</td><td class="num"><b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b></td><td class="num">${a.risk ? sgn(a.profit/a.risk*100, 1) + '%' : '—'}</td>${extra}</tr>`;
+  const row = (label, a, extra = '') => `<tr><td style="text-align:left">${label}</td><td class="num">${a.n}</td><td class="num">${a.w}-${a.l}${a.p ? '-' + a.p : ''}</td><td class="num">${a.w + a.l ? pct(a.w/(a.w + a.l), 0) : '—'}</td><td class="num">${money(a.risk)}</td><td class="num"><b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b></td><td class="num">${a.risk ? sgn(a.profit/a.risk*100, 1) + '%' : '—'}</td>${extra}</tr>`;
   const head = (first, extra = '') => `<thead><tr><th style="text-align:left">${first}</th><th>Bets</th><th>Record</th><th>Win %</th><th>Risked</th><th>Profit</th><th>ROI</th>${extra}</tr></thead>`;
   const tab = S.trkTab || 'type'; let table = '';
   if (tab === 'type'){
@@ -1674,12 +1675,12 @@ function betTracker(done){
   let cum = 0; const pts = L.map((b, i) => { cum += b.profit || 0; return [i + 1, +cum.toFixed(2)]; });
   const lbl = L.map(b => new Date(b.settledAt).toLocaleDateString([], { month: 'short', day: 'numeric' }));
   const chart = pts.length >= 2 ? lineChart({ series: [{ name: 'Running profit', color: 'var(--away)', points: [[0, 0], ...pts] }], xMin: 0, xMax: pts.length, h: 200, step: true,
-    xFmt: (v, l) => { const i = Math.round(v); return i === 0 ? 'Start' : l ? `Bet ${i} · ${lbl[i - 1] || ''} · ${betLabel(L[i - 1] || {}).replace(/<[^>]+>/g, '')}` : (lbl[i - 1] || ''); }, yFmt: (v, l) => l ? fmtP(v) : (unit === '$' ? '$' : '') + Math.round(v), refs: [{ y: 0, label: 'Break-even' }] }) : '<div class="note">The running profit chart appears after 2 settled bets.</div>';
+    xFmt: (v, l) => { const i = Math.round(v); return i === 0 ? 'Start' : l ? `Bet ${i} · ${lbl[i - 1] || ''} · ${betLabel(L[i - 1] || {}).replace(/<[^>]+>/g, '')}` : (lbl[i - 1] || ''); }, yFmt: (v, l) => l ? fmtP(v) : '$' + Math.round(v), refs: [{ y: 0, label: 'Break-even' }] }) : '<div class="note">The running profit chart appears after 2 settled bets.</div>';
   const tabs = [['type', 'By bet type'], ['team', 'By team'], ['book', 'By sportsbook'], ['odds', 'By odds'], ['month', 'By month']].map(([k, l]) => `<button class="btn sm ${tab === k ? 'on' : ''}" data-trktab="${k}">${l}</button>`).join('');
   return `<div class="section"><h3>Season tracker <small>— settled bets${range !== 'all' ? ', last ' + range + ' days' : ''}</small></h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="chips">${tabs}</div>
       <select id="trkRange"><option value="all" ${range === 'all' ? 'selected' : ''}>Whole season</option><option value="30" ${range === '30' ? 'selected' : ''}>Last 30 days</option><option value="7" ${range === '7' ? 'selected' : ''}>Last 7 days</option></select>
-      ${units.length > 1 ? `<select id="trkUnit">${units.map(u => `<option value="${u}" ${u === unit ? 'selected' : ''}>${u === '$' ? 'Dollar bets' : 'Unit bets'}</option>`).join('')}</select>` : ''}</div>
+</div>
     <div class="two"><div class="tw"><table id="trkTbl">${table}</table></div><div><h4 style="margin:0 0 6px">Running profit</h4>${chart}</div></div>
     <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” / “Against them” = spreads and moneylines only (full game and 1st half), where you picked this team or their opponent. Team totals depend only on one team’s scoring, so they’re listed separately under that team and never count for the opponent. ' : ''}Click any column to sort.</div></div>`;
 }
@@ -1694,20 +1695,22 @@ function renderBets(){
     return `<div class="betcard ${cls}"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span class="chip ${cls}">${chip}</span><span class="note" style="margin:0">${esc(BET_TYPES[b.type])}${b.book ? ' · ' + esc(b.book) : ''}</span></div>
       <div style="font-size:17px;font-weight:800;margin:6px 0 2px">${betLabel(b)} <small class="na" style="font-style:normal">${b.odds > 0 ? '+' : ''}${b.odds}</small></div>
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><span>${g ? `${esc(g.away.abbr)} <b>${g.away.score ?? ''}</b> @ ${esc(g.home.abbr)} <b>${g.home.score ?? ''}</b>` : esc(b.match)} <span class="na" style="font-style:normal">${esc(clock)}</span></span>
-        <span>${b.status === 'open' ? `To win <b>${payout(b.odds, b.stake).toFixed(2)} ${esc(b.unit)}</b> on ${b.stake} ${esc(b.unit)}` : `<b class="${b.profit > 0 ? 'good' : b.profit < 0 ? 'bad' : ''}">${b.profit > 0 ? '+' : ''}${(b.profit || 0).toFixed(2)} ${esc(b.unit)}</b>`}</span></div>
+        <span>${b.status === 'open' ? `To win <b>${money(payout(b.odds, b.stake))}</b> on ${money(b.stake)}` : `<b class="${b.profit > 0 ? 'good' : b.profit < 0 ? 'bad' : ''}">${b.status === 'push' ? 'Push — ' + money(b.stake) + ' back' : money(b.profit, true)}</b>`}</span></div>
       <div class="note" style="margin-top:4px">${b.status === 'open' ? (st.text || '') : esc(b.finalText || '')}</div>
       ${b.status === 'open' && st.chance != null ? `<div style="margin-top:6px;font-size:12px">Model chance this bet wins: <b class="model">${Math.round(st.chance*100)}%</b> <span class="tag">MODEL</span><div style="height:6px;background:var(--surface-3);border-radius:3px;margin-top:3px"><div style="height:6px;width:${Math.round(st.chance*100)}%;background:${st.chance >= 0.5 ? 'var(--good)' : 'var(--bad)'};border-radius:3px"></div></div></div>` : ''}
       <div style="display:flex;gap:6px;margin-top:8px"><button class="btn sm" data-betgame="${b.gid}" data-betday="${b.day}">Open game</button><button class="btn sm" data-editbet="${b.id}" data-editgid="${b.gid}">Edit</button><button class="btn sm" data-delbet="${b.id}">Delete</button></div>${b.edited ? `<div class="note">Edited ${new Date(b.edited).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>` : ''}</div>`; };
-  const settled = done.filter(b => b.unit === 'u' || !b.unit), w = done.filter(b => b.status === 'won').length, l = done.filter(b => b.status === 'lost').length, pu = done.filter(b => b.status === 'push').length;
-  const sumU = done.filter(b => (b.unit || 'u') === 'u').reduce((s2, b) => s2 + (b.profit || 0), 0), riskU = done.filter(b => (b.unit || 'u') === 'u' && b.status !== 'push').reduce((s2, b) => s2 + b.stake, 0);
-  const sumD = done.filter(b => b.unit === '$').reduce((s2, b) => s2 + (b.profit || 0), 0);
+  const w = done.filter(b => b.status === 'won').length, l = done.filter(b => b.status === 'lost').length, pu = done.filter(b => b.status === 'push').length;
+  const sumD = done.reduce((s2, b) => s2 + (b.profit || 0), 0), riskD = done.filter(b => b.status !== 'push').reduce((s2, b) => s2 + b.stake, 0);
+  const atRisk = open.reduce((s2, b) => s2 + b.stake, 0), toWin = open.reduce((s2, b) => s2 + payout(b.odds, b.stake), 0);
+  const unitBets = list.filter(b => (b.unit || 'u') === 'u');
   const live = open.map(betState).filter(x => x.known && x.started);
   m.innerHTML = `<div class="section"><h3>My Bets <small>— saved in this browser · checks every ${S.settings.refresh}s while the dashboard is open</small></h3><div class="tiles">
       <div class="tile"><span>Open bets</span><b>${open.length}</b><em>${live.filter(x => x.v > 0).length} winning · ${live.filter(x => x.v < 0).length} losing right now</em></div>
       <div class="tile"><span>Record</span><b>${w}-${l}${pu ? '-' + pu : ''}</b><em>${w + l ? Math.round(w/(w + l)*100) + '% wins' : 'no settled bets yet'}</em></div>
-      <div class="tile"><span>Profit (units)</span><b class="${sumU > 0 ? 'good' : sumU < 0 ? 'bad' : ''}">${sumU > 0 ? '+' : ''}${sumU.toFixed(2)}u</b><em>${riskU ? 'ROI ' + sgn(sumU/riskU*100) + '%' : ''}</em></div>
-      ${done.some(b => b.unit === '$') ? `<div class="tile"><span>Profit ($)</span><b class="${sumD > 0 ? 'good' : sumD < 0 ? 'bad' : ''}">${sumD >= 0 ? '+' : '-'}$${Math.abs(sumD).toFixed(2)}</b></div>` : ''}
+      <div class="tile"><span>Profit</span><b class="${sumD > 0 ? 'good' : sumD < 0 ? 'bad' : ''}">${money(sumD, true)}</b><em>${riskD ? `on ${money(riskD)} risked · ROI ${sgn(sumD/riskD*100)}%` : ''}</em></div>
+      <div class="tile"><span>Open action</span><b>${money(atRisk)}</b><em>${open.length ? `to win ${money(toWin)}` : 'nothing open'}</em></div>
     </div>
+    ${unitBets.length ? `<div class="notice" style="margin-top:10px">You have <b>${unitBets.length}</b> older bet${unitBets.length === 1 ? '' : 's'} logged in units. Convert ${unitBets.length === 1 ? 'it' : 'them'} to dollars: 1 unit = $<input type="number" id="unitRate" value="10" min="0" step="1" style="width:80px"> <button class="btn sm on" id="unitConvert">Convert</button> <span class="na" style="font-style:normal">(until then they count as $1 per unit)</span></div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${window.Notification && Notification.permission !== 'granted' ? '<button class="btn sm" id="betNotif">🔔 Also notify me outside this tab</button>' : ''}<button class="btn sm" id="betExport">Export bets</button><label class="btn sm" style="cursor:pointer">Import bets<input type="file" id="betImport" accept=".json" style="display:none"></label></div>
     <div class="note">To add a bet: open any game and click <b>＋ Add my bet</b>. When a bet is decided you'll get a banner here (and a desktop notification if you turn it on). 1st-half bets settle at halftime; player props settle at the final.</div></div>
     ${betTracker(done)}
@@ -1715,7 +1718,8 @@ function renderBets(){
     <h3 style="margin-top:16px">Settled (${done.length})</h3>${done.length ? `<div class="grid">${done.slice(0, 60).map(card).join('')}</div>` : '<div class="note">Nothing settled yet.</div>'}`;
   makeSortable(document.getElementById('trkTbl'), 'trk-' + (S.trkTab || 'type'));
   const tr = document.getElementById('trkRange'); if (tr) tr.onchange = e => { S.trkRange = e.target.value; renderBets(); };
-  const tu = document.getElementById('trkUnit'); if (tu) tu.onchange = e => { S.trkUnit = e.target.value; renderBets(); };
+  const uc = document.getElementById('unitConvert'); if (uc) uc.onclick = () => { const r = num(document.getElementById('unitRate').value); if (!r || r <= 0) return;
+    const L2 = myBets(); for (const b of L2) if ((b.unit || 'u') === 'u'){ b.stake = +(b.stake*r).toFixed(2); if (b.profit != null) b.profit = +(b.profit*r).toFixed(2); b.unit = '$'; } saveBets(L2); renderBets(); };
   const nb = document.getElementById('betNotif'); if (nb) nb.onclick = () => Notification.requestPermission().then(() => renderBets());
   document.getElementById('betExport').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(myBets(), null, 1)], { type: 'application/json' })); a.download = 'hoops-lab-bets-' + todayStr() + '.json'; a.click(); };
   document.getElementById('betImport').onchange = e => { const f = e.target.files[0]; if (!f) return; f.text().then(t => { try { const inc = JSON.parse(t); const cur = myBets(), ids = new Set(cur.map(b => b.id)); for (const b of inc) if (b && b.id && !ids.has(b.id)) cur.push(Object.assign(b, { notified: true })); saveBets(cur); renderBets(); updateBetsNav(); } catch { alert('That file isn’t a Hoops Lab bets export.'); } }); };
