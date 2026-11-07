@@ -1646,19 +1646,18 @@ function betTracker(done){
       (g[k] = g[k] || agg()); add(g[k], b); }
     table = head('Bet type') + '<tbody>' + Object.entries(g).sort((a, b) => b[1].n - a[1].n).map(([k, a]) => row(esc(k), a)).join('') + '</tbody>';
   } else if (tab === 'team'){
-    const T = {}; const get = t => T[t.id] = T[t.id] || { t, on: agg(), vs: agg(), all: agg() };
+    const T = {}; const get = t => T[t.id] = T[t.id] || { t, on: agg(), vs: agg(), all: agg(), tto: agg(), ttu: agg() };
     for (const b of L){ const tm = betTeams(b);
       for (const t of [tm.home, tm.away]) add(get(t).all, b);
       if (b.team || b.teamAbbr){
         // the team on the ticket: match by id when both sides have ids, otherwise by abbreviation (bets saved before ids were stored)
         const isHome = (b.team && String(b.team) === String(tm.home.id)) || (b.teamAbbr && b.teamAbbr === tm.home.abbr && b.teamAbbr !== tm.away.abbr);
         const picked = isHome ? tm.home : tm.away, opp = isHome ? tm.away : tm.home;
-        // a team-total UNDER is a bet against that team's offense, so it counts as "against them"
-        const forTeam = (b.type === 'tt' || b.type === 'h1tt') && b.side === 'u' ? opp : picked, vsTeam = forTeam === picked ? opp : picked;
-        add(get(forTeam).on, b); add(get(vsTeam).vs, b); } }
+        if (b.type === 'tt' || b.type === 'h1tt'){ add(get(picked)[b.side === 'u' ? 'ttu' : 'tto'], b); }   // team totals: only the team on the ticket
+        else { add(get(picked).on, b); add(get(opp).vs, b); } } }                                     // spreads & moneylines: head-to-head
     const cell = a => a.n ? `${a.w}-${a.l}${a.p ? '-' + a.p : ''} · <b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b>` : '—';
-    table = `<thead><tr><th style="text-align:left">Team</th><th title="Every settled bet on games this team played">Bets in their games</th><th>Record</th><th title="Total profit from all bets on this team's games">Profit (all)</th><th title="Spreads, moneylines and team totals where you backed this team">Backing them</th><th title="Spreads, moneylines and team totals where you backed their opponent">Against them</th></tr></thead><tbody>` +
-      Object.values(T).sort((a, b) => b.all.profit - a.all.profit).map(x => `<tr><td style="text-align:left">${/^abbr:/.test(x.t.id) ? esc(x.t.name || x.t.abbr) : `<span class="tlink" data-team="${esc(x.t.id)}">${esc(x.t.name || x.t.abbr)}</span>`}</td><td class="num">${x.all.n}</td><td class="num">${x.all.w}-${x.all.l}${x.all.p ? '-' + x.all.p : ''}</td><td class="num"><b class="${x.all.profit > 0 ? 'good' : x.all.profit < 0 ? 'bad' : ''}">${fmtP(x.all.profit)}</b></td><td class="num">${cell(x.on)}</td><td class="num">${cell(x.vs)}</td></tr>`).join('') + '</tbody>';
+    table = `<thead><tr><th style="text-align:left">Team</th><th title="Every settled bet on games this team played">Bets in their games</th><th>Record</th><th title="Total profit from all bets on this team's games">Profit (all)</th><th title="Spreads and moneylines (full game and 1st half) where you picked this team">Backing them</th><th title="Spreads and moneylines where you picked their opponent">Against them</th><th title="This team's own team-total bets (full game and 1st half)">Team totals: overs</th><th>Team totals: unders</th></tr></thead><tbody>` +
+      Object.values(T).sort((a, b) => b.all.profit - a.all.profit).map(x => `<tr><td style="text-align:left">${/^abbr:/.test(x.t.id) ? esc(x.t.name || x.t.abbr) : `<span class="tlink" data-team="${esc(x.t.id)}">${esc(x.t.name || x.t.abbr)}</span>`}</td><td class="num">${x.all.n}</td><td class="num">${x.all.w}-${x.all.l}${x.all.p ? '-' + x.all.p : ''}</td><td class="num"><b class="${x.all.profit > 0 ? 'good' : x.all.profit < 0 ? 'bad' : ''}">${fmtP(x.all.profit)}</b></td><td class="num">${cell(x.on)}</td><td class="num">${cell(x.vs)}</td><td class="num">${cell(x.tto)}</td><td class="num">${cell(x.ttu)}</td></tr>`).join('') + '</tbody>';
   } else if (tab === 'book'){
     const g = {}; for (const b of L){ const k = b.book || 'Not entered'; (g[k] = g[k] || agg()); add(g[k], b); }
     table = head('Sportsbook') + '<tbody>' + Object.entries(g).sort((a, b) => b[1].n - a[1].n).map(([k, a]) => row(esc(k), a)).join('') + '</tbody>';
@@ -1682,7 +1681,7 @@ function betTracker(done){
       <select id="trkRange"><option value="all" ${range === 'all' ? 'selected' : ''}>Whole season</option><option value="30" ${range === '30' ? 'selected' : ''}>Last 30 days</option><option value="7" ${range === '7' ? 'selected' : ''}>Last 7 days</option></select>
       ${units.length > 1 ? `<select id="trkUnit">${units.map(u => `<option value="${u}" ${u === unit ? 'selected' : ''}>${u === '$' ? 'Dollar bets' : 'Unit bets'}</option>`).join('')}</select>` : ''}</div>
     <div class="two"><div class="tw"><table id="trkTbl">${table}</table></div><div><h4 style="margin:0 0 6px">Running profit</h4>${chart}</div></div>
-    <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” = spreads and moneylines on that team plus team-total overs for them; “Against them” = the same bets on their opponent, plus team-total unders on them. ' : ''}Click any column to sort.</div></div>`;
+    <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” / “Against them” = spreads and moneylines only (full game and 1st half), where you picked this team or their opponent. Team totals depend only on one team’s scoring, so they’re listed separately under that team and never count for the opponent. ' : ''}Click any column to sort.</div></div>`;
 }
 
 function renderBets(){
