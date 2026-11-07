@@ -1563,11 +1563,14 @@ async function refreshBetGames(){
   settleBets();
   if (S.view === 'bets') renderBets();
 }
-function openBetForm(gid){
-  const g = betGame(gid); if (!g) return; const det = S.details.get(gid), ln = currentLine(g), h1 = h1Line(g);
+async function openBetForm(gid, editId){
+  const edit = editId ? myBets().find(b => b.id === editId) : null;
+  let g = betGame(gid);
+  if (!g && edit && edit.day){ try { const list = await fetchScoreboard(edit.day); const f = list.find(x => x.gid === gid); if (f){ S.betGames.set(gid, f); g = f; } } catch {} }
+  if (!g){ alert('Couldn\u2019t load this game from ESPN right now — try again in a moment.'); return; } const det = S.details.get(gid), ln = currentLine(g), h1 = h1Line(g);
   const players = []; for (const [P, t] of [[det && det.pA, g.away], [det && det.pH, g.home]]) for (const r of (P && P.rows) || []) if (!r.dnp) players.push({ id: r.id, name: r.name, team: t.abbr });
   const box = document.getElementById('betBox');
-  box.innerHTML = `<button class="btn sm close" data-closebet>Close</button><h3 style="margin-top:0">Add my bet</h3><div class="note">${esc(g.away.name)} @ ${esc(g.home.name)} · ${new Date(g.date).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
+  box.innerHTML = `<button class="btn sm close" data-closebet>Close</button><h3 style="margin-top:0">${edit ? 'Edit my bet' : 'Add my bet'}</h3><div class="note">${esc(g.away.name)} @ ${esc(g.home.name)} · ${new Date(g.date).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
     <label>Bet type</label><select id="bType">${Object.entries(BET_TYPES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
     <div id="bTeamWrap"><label>Team</label><select id="bTeam"><option value="${g.away.id}">${esc(g.away.name)}</option><option value="${g.home.id}">${esc(g.home.name)}</option></select></div>
     <div id="bSideWrap" style="display:none"><label>Side</label><select id="bSide"><option value="o">Over</option><option value="u">Under</option></select></div>
@@ -1577,7 +1580,8 @@ function openBetForm(gid){
     <label>Odds (American)</label><input type="number" id="bOdds" value="-110">
     <div style="display:flex;gap:8px"><div style="flex:1"><label>Stake</label><input type="number" step="0.1" id="bStake" value="1"></div><div style="flex:1"><label>Unit</label><select id="bUnit"><option value="u">units</option><option value="$">$</option></select></div></div>
     <label>Sportsbook (optional)</label><input type="text" id="bBook" value="${esc(ln ? shortBook(ln.book) : '')}">
-    <div style="margin-top:14px;display:flex;gap:8px"><button class="btn on" id="bSave">Save bet</button><button class="btn" data-closebet>Cancel</button></div>
+    <div style="margin-top:14px;display:flex;gap:8px"><button class="btn on" id="bSave">${edit ? 'Save changes' : 'Save bet'}</button><button class="btn" data-closebet>Cancel</button></div>
+    ${edit && edit.status !== 'open' ? `<div class="note">This bet was already settled as <b>${edit.status.toUpperCase()}</b>. Saving re-checks it with your changes and shows a new result banner.</div>` : ''}
     <div class="note">Saved in this browser. Lines below pre-fill from ${esc(ln ? ln.book : 'the posted line')} when available — change them to match your ticket.</div>`;
   const $ = id => document.getElementById(id);
   const fill = () => { const ty = $('bType').value, team = $('bTeam').value, isH = team === g.home.id;
@@ -1594,15 +1598,20 @@ function openBetForm(gid){
     if (ty === 'h1total' && h1 && h1.total != null){ L = h1.total; O = ($('bSide').value === 'o' ? h1.overOdds : h1.underOdds) ?? -110; }
     $('bLine').value = L; $('bOdds').value = O; };
   $('bType').onchange = fill; $('bTeam').onchange = fill; $('bSide').onchange = fill; fill();
+  if (edit){ // load the saved bet into the form
+    $('bType').value = edit.type; if (edit.team) $('bTeam').value = edit.team; if (edit.side) $('bSide').value = edit.side; fill();
+    if (edit.line != null) $('bLine').value = edit.line; $('bOdds').value = edit.odds; $('bStake').value = edit.stake; $('bUnit').value = edit.unit || 'u'; $('bBook').value = edit.book || '';
+    if (edit.type === 'prop'){ if ($('bPlayer') && edit.playerId && [...$('bPlayer').options].some(o => o.value === String(edit.playerId))) $('bPlayer').value = edit.playerId; else if ($('bPlayerTxt')) $('bPlayerTxt').value = edit.player || ''; if (edit.stat) $('bStat').value = edit.stat; } }
   $('bSave').onclick = () => {
     const ty = $('bType').value, team = $('bTeam').value, isH = team === g.home.id, line = num($('bLine').value), odds = num($('bOdds').value), stake = num($('bStake').value) || 1;
     if (ty !== 'ml' && line == null){ $('bLine').focus(); return; } if (odds == null || Math.abs(odds) < 100){ $('bOdds').focus(); return; }
-    const b = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), gid: g.gid, day: S.games.has(g.gid) ? S.date : (myBets().find(x => x.gid === g.gid) || {}).day || S.date,
+    const b = { id: edit ? edit.id : 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), gid: g.gid, day: edit ? edit.day : S.games.has(g.gid) ? S.date : (myBets().find(x => x.gid === g.gid) || {}).day || S.date,
       match: `${g.away.abbr} @ ${g.home.abbr}`, matchLong: `${g.away.name} @ ${g.home.name}`, date: g.date, type: ty, line: ty === 'ml' ? null : line, odds, stake, unit: $('bUnit').value, book: $('bBook').value.trim(), created: Date.now(), status: 'open' };
     if (['spread', 'ml', 'h1spread', 'tt', 'h1tt'].includes(ty)){ b.team = team; b.teamAbbr = isH ? g.home.abbr : g.away.abbr; }
     if (['total', 'h1total', 'prop', 'tt', 'h1tt'].includes(ty)) b.side = $('bSide').value;
     if (ty === 'prop'){ const sel = $('bPlayer'); if (sel){ b.playerId = sel.value; b.player = sel.selectedOptions[0].dataset.name; } else { b.player = $('bPlayerTxt').value.trim(); if (!b.player) return; } b.stat = $('bStat').value; }
-    const list = myBets(); list.push(b); saveBets(list); updateBetsNav();
+    if (edit){ b.created = edit.created; b.edited = Date.now(); }
+    const list = myBets().filter(x => x.id !== b.id); list.push(b); saveBets(list); updateBetsNav(); if (edit) settleBets();
     document.getElementById('betModal').classList.remove('open'); if (S.view === 'board') renderBoard(); if (S.view === 'bets') renderBets();
     if (window.Notification && Notification.permission === 'default'){ /* asked from the My Bets page */ }
   };
@@ -1621,7 +1630,7 @@ function renderBets(){
         <span>${b.status === 'open' ? `To win <b>${payout(b.odds, b.stake).toFixed(2)} ${esc(b.unit)}</b> on ${b.stake} ${esc(b.unit)}` : `<b class="${b.profit > 0 ? 'good' : b.profit < 0 ? 'bad' : ''}">${b.profit > 0 ? '+' : ''}${(b.profit || 0).toFixed(2)} ${esc(b.unit)}</b>`}</span></div>
       <div class="note" style="margin-top:4px">${b.status === 'open' ? (st.text || '') : esc(b.finalText || '')}</div>
       ${b.status === 'open' && st.chance != null ? `<div style="margin-top:6px;font-size:12px">Model chance this bet wins: <b class="model">${Math.round(st.chance*100)}%</b> <span class="tag">MODEL</span><div style="height:6px;background:var(--surface-3);border-radius:3px;margin-top:3px"><div style="height:6px;width:${Math.round(st.chance*100)}%;background:${st.chance >= 0.5 ? 'var(--good)' : 'var(--bad)'};border-radius:3px"></div></div></div>` : ''}
-      <div style="display:flex;gap:6px;margin-top:8px"><button class="btn sm" data-betgame="${b.gid}" data-betday="${b.day}">Open game</button><button class="btn sm" data-delbet="${b.id}">Delete</button></div></div>`; };
+      <div style="display:flex;gap:6px;margin-top:8px"><button class="btn sm" data-betgame="${b.gid}" data-betday="${b.day}">Open game</button><button class="btn sm" data-editbet="${b.id}" data-editgid="${b.gid}">Edit</button><button class="btn sm" data-delbet="${b.id}">Delete</button></div>${b.edited ? `<div class="note">Edited ${new Date(b.edited).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>` : ''}</div>`; };
   const settled = done.filter(b => b.unit === 'u' || !b.unit), w = done.filter(b => b.status === 'won').length, l = done.filter(b => b.status === 'lost').length, pu = done.filter(b => b.status === 'push').length;
   const sumU = done.filter(b => (b.unit || 'u') === 'u').reduce((s2, b) => s2 + (b.profit || 0), 0), riskU = done.filter(b => (b.unit || 'u') === 'u' && b.status !== 'push').reduce((s2, b) => s2 + b.stake, 0);
   const sumD = done.filter(b => b.unit === '$').reduce((s2, b) => s2 + (b.profit || 0), 0);
@@ -2828,6 +2837,7 @@ document.addEventListener('click', e => {
   const tab = t.closest('[data-tab]'); if (tab){ S.openTab = tab.dataset.tab; renderDetail(); return; }
   const day = t.closest('[data-day]'); if (day && day.classList.contains('day')){ loadDate(day.dataset.day); return; }
   const bg = t.closest('[data-betgame]'); if (bg){ const gid = bg.dataset.betgame, dd = bg.dataset.betday; if (S.games.has(gid)){ openGame(gid); } else { setView('board'); loadDate(dd).then(() => openGame(gid)); } return; }
+  const eb = t.closest('[data-editbet]'); if (eb){ openBetForm(eb.dataset.editgid, eb.dataset.editbet); return; }
   const ab = t.closest('[data-addbet]'); if (ab){ openBetForm(ab.dataset.addbet); return; }
   const bdel = t.closest('[data-delbet]'); if (bdel){ if (confirm('Delete this bet?')){ saveBets(myBets().filter(b => b.id !== bdel.dataset.delbet)); renderBets(); updateBetsNav(); } return; }
   const tcl = t.closest('[data-closetoast]'); if (tcl){ tcl.closest('.toast').remove(); return; }
