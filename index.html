@@ -2373,6 +2373,47 @@ async function renderRank(){
 /* =========================================================================
    PLAYER PAGES (built from each game's ESPN box score + play-by-play)
    ========================================================================= */
+/* ---------- Player career: every season and the team played for (ESPN athlete stats + bio) ---------- */
+const ESPN_ATH = 'https://site.web.api.espn.com/apis/common/v3/sports/basketball/mens-college-basketball/athletes';
+S.career = new Map();
+async function loadCareer(pid){
+  if (S.career.has(pid)) return S.career.get(pid);
+  const out = { seasons: [], labels: [], bio: null, err: null };
+  const [st, bio] = await Promise.all([Net.get(`${ESPN_ATH}/${pid}/stats`, { ttl: 6*3600e3 }).catch(e => { out.err = e.message; return null; }), Net.get(`${ESPN_ATH}/${pid}`, { ttl: 6*3600e3 }).catch(() => null)]);
+  // bio: class, height, weight, hometown, current team
+  const a = bio && (bio.athlete || bio);
+  if (a && (a.displayName || a.fullName)) out.bio = { name: a.displayName || a.fullName, cls: a.experience?.displayValue || a.experience?.abbreviation || '', ht: a.displayHeight || '', wt: a.displayWeight || '',
+    home: a.birthPlace ? [a.birthPlace.city, a.birthPlace.state || a.birthPlace.country].filter(Boolean).join(', ') : '', pos: a.position?.displayName || a.position?.abbreviation || '', jersey: a.jersey || '', team: a.team?.displayName || '' };
+  // career: find the per-season table (prefer per-game averages) — each row has a season, a team and a stats array
+  const teamsMap = {}; const walkTeams = o => { if (!o || typeof o !== 'object') return; if (Array.isArray(o)){ o.forEach(walkTeams); return; } if (o.id && (o.displayName || o.abbreviation) && (o.logos || o.abbreviation)) teamsMap[String(o.id)] = o; for (const k in o) if (o[k] && typeof o[k] === 'object') walkTeams(o[k]); };
+  if (st){ walkTeams(st.teams || st);
+    const cats = (st.categories || st.splits?.categories || []);
+    const pick = cats.find(c => /average/i.test(c.name || c.displayName || '')) || cats.find(c => (c.statistics || []).length) || null;
+    if (pick){ out.labels = pick.labels || pick.names || []; out.cat = pick.displayName || pick.name || '';
+      for (const r of pick.statistics || []){ const tid = String(r.teamId ?? r.team?.id ?? ''); const T = teamsMap[tid] || r.team || {};
+        out.seasons.push({ season: r.season?.displayName || r.season?.year || r.displayName || '', year: num(r.season?.year), teamId: tid, team: T.displayName || T.name || (S.teamNames && S.teamNames[tid] && S.teamNames[tid].name) || r.teamSlug || (tid ? 'Team ' + tid : ''), logo: (T.logos || [])[0]?.href || T.logo || '', stats: r.stats || [] }); }
+      out.seasons.sort((x, y) => (x.year || 0) - (y.year || 0));
+      if (pick.totals) out.totals = pick.totals; }
+  }
+  S.career.set(pid, out); return out;
+}
+function careerHtml(P){
+  const c = S.career.get(P.id); const link = `https://www.espn.com/mens-college-basketball/player/_/id/${encodeURIComponent(P.id)}`;
+  if (!c) return `<div class="section"><h3>Career</h3><div class="note">Loading career history…</div></div>`;
+  const bio = c.bio ? `<div class="note" style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">${[c.bio.cls, c.bio.pos, c.bio.ht && c.bio.wt ? c.bio.ht + ', ' + c.bio.wt : c.bio.ht, c.bio.home ? 'from ' + c.bio.home : '', c.bio.jersey ? '#' + c.bio.jersey : ''].filter(Boolean).map(esc).join(' · ')}</div>` : '';
+  if (!c.seasons.length) return `<div class="section"><h3>Career</h3>${bio}<div class="note">ESPN didn't return season-by-season history for this player${c.err ? ` (${esc(c.err)})` : ''}. Freshmen only have this season. <a href="${link}" target="_blank" rel="noopener">Open ESPN's player page ↗</a></div></div>`;
+  const want = ['GP', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO', 'FG%', '3P%', 'FT%'];
+  const idx = want.map(w => c.labels.findIndex(l => l.toUpperCase() === w || (w === 'TO' && /^TOV?$/i.test(l)) || (w === '3P%' && /^3P(T)?%$/i.test(l)))).map((ix, i) => [want[i], ix]).filter(([, ix]) => ix >= 0);
+  const cols = idx.length >= 4 ? idx : c.labels.map((l, i) => [l, i]);
+  const teams = [...new Set(c.seasons.map(x => x.teamId).filter(Boolean))];
+  const transfer = teams.length > 1 ? `<div class="note" style="margin-bottom:6px">🔁 Played for ${teams.length} schools: ${teams.map(t => esc((c.seasons.find(x => x.teamId === t) || {}).team || t)).join(' → ')}</div>` : '';
+  return `<div class="section"><h3>Career <small>— ${esc(c.cat || 'per-game averages')} by season, from ESPN · <a href="${link}" target="_blank" rel="noopener">ESPN profile ↗</a></small></h3>${bio}${transfer}
+    <div class="tw"><table><thead><tr><th style="text-align:left">Season</th><th style="text-align:left">Team</th>${cols.map(([l]) => `<th>${esc(l)}</th>`).join('')}</tr></thead><tbody>
+    ${c.seasons.map(x => `<tr><td style="text-align:left">${esc(x.season)}</td><td style="text-align:left">${x.logo ? `<img src="${esc(x.logo)}" alt="" style="width:16px;height:16px;vertical-align:-3px;margin-right:5px">` : ''}${x.teamId && S.teamNames && S.teamNames[x.teamId] ? `<span class="tlink" data-team="${esc(x.teamId)}">${esc(x.team)}</span>` : esc(x.team)}</td>${cols.map(([, i]) => `<td class="num">${esc(x.stats[i] ?? '—')}</td>`).join('')}</tr>`).join('')}
+    ${c.totals && c.seasons.length > 1 ? `<tr class="tot"><td style="text-align:left">Career</td><td></td>${cols.map(([, i]) => `<td class="num">${esc(c.totals[i] ?? '')}</td>`).join('')}</tr>` : ''}
+    </tbody></table></div><div class="note">Only college seasons ESPN tracks are listed (Division I and some Division II). Junior-college and high-school years aren't included.</div></div>`;
+}
+
 function openPlayer(id, team, name){ S.playerView = { id: String(id), team: String(team || ''), name: name || '' }; setView('player'); }
 S.pcache = new Map();
 async function gameForPlayer(ev){
@@ -2436,9 +2477,10 @@ async function renderPlayer(){
       </div>${S.playerLoading ? `<div class="note">Loading games… ${games.length}/${evs.length}</div>` : ''}</div>
       <div class="two"><div class="section"><h3>Points & Game Score by game</h3>${trend}</div>
         <div class="section"><h3>Season shot chart <small>— ${shots.length} located shots</small></h3>${shots.length ? courtSvg(shots, 'var(--away)', name + ' shot chart') + zoneTable(shots) : '<div class="note">No shot locations available for this player’s games yet.</div>'}</div></div>
-      <div class="section"><h3>Game log</h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opp</th><th style="text-align:left">Result</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>TO</th><th>PF</th><th>FG</th><th>3PT</th><th>FT</th><th>GmSc</th><th>TS%</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="17" class="na">No games yet</td></tr>'}</tbody></table></div></div>`;
+      <div class="section"><h3>Game log</h3><div class="tw"><table><thead><tr><th>Date</th><th style="text-align:left">Opp</th><th style="text-align:left">Result</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>TO</th><th>PF</th><th>FG</th><th>3PT</th><th>FT</th><th>GmSc</th><th>TS%</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="17" class="na">No games yet</td></tr>'}</tbody></table></div></div>${careerHtml(P)}`;
   };
   S.playerLoading = true; draw(); loadPlayersDB().then(() => draw());
+  loadCareer(P.id).then(() => draw());
   let n = 0;
   const scv = v => v == null ? null : typeof v === 'object' ? num(v.value ?? v.displayValue) : num(v);
   await Promise.all(evs.map(e => gameForPlayer(String(e.id)).then(g0 => {
