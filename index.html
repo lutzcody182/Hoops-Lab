@@ -900,7 +900,7 @@ function project(g){
   let poss = g.possession === g.home.id ? 'h' : g.possession === g.away.id ? 'a' : null;
   const sim = simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP, aPPP, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims);
   const tot = sim.hs.map((h, i) => h + sim.as[i]).sort((x, y) => x - y); const mar = sim.hs.map((h, i) => h - sim.as[i]).sort((x, y) => x - y);
-  Object.assign(res, { dist: { tot, mar }, hPPP, aPPP, pace, possH, possA, luckH, luckA, n: sim.n,
+  Object.assign(res, { dist: { tot, mar, hs: sim.hs, as: sim.as }, hPPP, aPPP, pace, possH, possA, luckH, luckA, n: sim.n,
     projH: mean(sim.hs), projA: mean(sim.as), projT: mean(tot), projM: mean(mar), pHome: sim.hw, pOT: sim.ot,
     t10: quant(tot, 0.1), t90: quant(tot, 0.9), m10: quant(mar, 0.1), m90: quant(mar, 0.9),
     projPossH: possH + mean(sim.ph), projPossA: possA + mean(sim.pa),
@@ -910,7 +910,7 @@ function project(g){
   if (g.status === 'pre' || (g.status === 'in' && g.period === 1)){
     const s1 = simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims));
     const t1 = s1.hs.map((h, i) => h + s1.as[i]).sort((x, y) => x - y), m1 = s1.hs.map((h, i) => h - s1.as[i]).sort((x, y) => x - y);
-    res.h1 = { dist: { tot: t1, mar: m1 }, projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L };
+    res.h1 = { dist: { tot: t1, mar: m1, hs: s1.hs, as: s1.as }, projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L };
     if (h1L){ if (h1L.total != null){ res.h1.pOver = t1.filter(v => v > h1L.total).length/t1.length; res.h1.pPushT = t1.filter(v => v === h1L.total).length/t1.length; }
       if (h1L.homeSpread != null){ res.h1.pCoverH = m1.filter(v => v + h1L.homeSpread > 0).length/m1.length; res.h1.pPush = m1.filter(v => v + h1L.homeSpread === 0).length/m1.length; } }
   } else if (g.home.lines.length >= 1 && g.away.lines.length >= 1){
@@ -1470,7 +1470,7 @@ function myBets(){ if (BETS_CACHE) return BETS_CACHE; try { BETS_CACHE = JSON.pa
 function saveBets(list){ BETS_CACHE = list; try { localStorage.setItem('hl.bets', JSON.stringify(list)); } catch {} }
 S.betGames = new Map();
 function betGame(gid){ return S.games.get(gid) || S.betGames.get(gid) || null; }
-const BET_TYPES = { spread: 'Spread', total: 'Total', ml: 'Moneyline', h1spread: '1st-half spread', h1total: '1st-half total', prop: 'Player prop' };
+const BET_TYPES = { spread: 'Spread', total: 'Total', ml: 'Moneyline', tt: 'Team total', h1spread: '1st-half spread', h1total: '1st-half total', h1tt: '1st-half team total', prop: 'Player prop' };
 const PROP_STATS = { PTS: 'Points', REB: 'Rebounds', AST: 'Assists', '3PM': 'Threes made', PRA: 'Pts + Reb + Ast', 'PR': 'Pts + Reb', 'PA': 'Pts + Ast' };
 function payout(odds, stake){ odds = num(odds) ?? -110; return odds > 0 ? stake*odds/100 : stake*100/Math.abs(odds); }
 function betLabel(b){
@@ -1478,6 +1478,7 @@ function betLabel(b){
   if (b.type === 'spread' || b.type === 'h1spread') return `${esc(b.teamAbbr)} ${ln(b.line)}${b.type === 'h1spread' ? ' (1H)' : ''}`;
   if (b.type === 'total' || b.type === 'h1total') return `${b.side === 'o' ? 'Over' : 'Under'} ${b.line}${b.type === 'h1total' ? ' (1H)' : ''}`;
   if (b.type === 'ml') return `${esc(b.teamAbbr)} moneyline`;
+  if (b.type === 'tt' || b.type === 'h1tt') return `${esc(b.teamAbbr)} team total ${b.side === 'o' ? 'over' : 'under'} ${b.line}${b.type === 'h1tt' ? ' (1H)' : ''}`;
   if (b.type === 'prop') return `${esc(b.player)} ${b.side === 'o' ? 'over' : 'under'} ${b.line} ${PROP_STATS[b.stat] || b.stat}`;
   return '?';
 }
@@ -1504,14 +1505,19 @@ function betState(b){
     if (!final && p && p.dist) chance = prob(p.dist.mar, x => (isH ? x : -x) + b.line > 0); }
   else if (b.type === 'total'){ const T = h + a; v = b.side === 'o' ? T - b.line : b.line - T; final = g.status === 'post'; text = final ? `Final total ${T} vs ${b.line}` : `${T} points vs ${b.line}${started ? (b.side === 'o' ? (T > b.line ? ' — already over' : ` — needs ${Math.floor(b.line - T) + 1} more`) : (T > b.line ? ' — already over' : ` — room for ${Math.ceil(b.line - T) - 1} more points`)) : ''}`;
     if (!final && p && p.dist) chance = prob(p.dist.tot, x => b.side === 'o' ? x > b.line : x < b.line); }
+  else if (b.type === 'tt'){ const T = isH ? h : a; v = b.side === 'o' ? T - b.line : b.line - T; final = g.status === 'post';
+    text = final ? `Final: ${esc(b.teamAbbr)} scored ${T} vs ${b.line}` : `${esc(b.teamAbbr)} has ${T} vs ${b.line}${started ? (b.side === 'o' ? (T > b.line ? ' — already over' : ` — needs ${Math.floor(b.line - T) + 1} more`) : (T > b.line ? ' — already over' : ` — room for ${Math.ceil(b.line - T) - 1} more`)) : ''}`;
+    if (!final && p && p.dist && p.dist.hs) chance = prob(isH ? p.dist.hs : p.dist.as, x => b.side === 'o' ? x > b.line : x < b.line); }
   else if (b.type === 'ml'){ const m = isH ? h - a : a - h; v = m; final = g.status === 'post'; text = final ? `Final: ${esc(b.teamAbbr)} ${m > 0 ? 'won' : 'lost'} by ${Math.abs(m)}` : `${esc(b.teamAbbr)} ${m > 0 ? 'leads' : m < 0 ? 'trails' : 'tied'}${m ? ' by ' + Math.abs(m) : ''}`;
     if (!final && p && p.pHome != null) chance = isH ? p.pHome : 1 - p.pHome; }
-  else if (b.type === 'h1spread' || b.type === 'h1total'){
+  else if (b.type === 'h1spread' || b.type === 'h1total' || b.type === 'h1tt'){
     const done1 = g.status === 'half' || g.status === 'post' || (g.status === 'in' && g.period >= 2);
     const h1 = done1 ? (g.home.lines[0] ?? h) : (g.period === 1 ? h : 0), a1 = done1 ? (g.away.lines[0] ?? a) : (g.period === 1 ? a : 0);
     final = done1 && g.home.lines.length >= 1;
     if (b.type === 'h1spread'){ const m = isH ? h1 - a1 : a1 - h1; v = m + b.line; text = `1st half: ${esc(b.teamAbbr)} ${m >= 0 ? 'up' : 'down'} ${Math.abs(m)} → ${v > 0 ? 'covering' : v < 0 ? 'not covering' : 'push'}`;
       if (!final && p && p.h1 && p.h1.dist) chance = prob(p.h1.dist.mar, x => (isH ? x : -x) + b.line > 0); }
+    else if (b.type === 'h1tt'){ const T = isH ? h1 : a1; v = b.side === 'o' ? T - b.line : b.line - T; text = `1st half: ${esc(b.teamAbbr)} ${final ? 'scored' : 'has'} ${T} vs ${b.line}`;
+      if (!final && p && p.h1 && p.h1.dist && p.h1.dist.hs) chance = prob(isH ? p.h1.dist.hs : p.h1.dist.as, x => b.side === 'o' ? x > b.line : x < b.line); }
     else { const T = h1 + a1; v = b.side === 'o' ? T - b.line : b.line - T; text = `1st half: ${T} points vs ${b.line}`;
       if (!final && p && p.h1 && p.h1.dist) chance = prob(p.h1.dist.tot, x => b.side === 'o' ? x > b.line : x < b.line); }
   }
@@ -1575,10 +1581,11 @@ function openBetForm(gid){
     <div class="note">Saved in this browser. Lines below pre-fill from ${esc(ln ? ln.book : 'the posted line')} when available — change them to match your ticket.</div>`;
   const $ = id => document.getElementById(id);
   const fill = () => { const ty = $('bType').value, team = $('bTeam').value, isH = team === g.home.id;
-    $('bTeamWrap').style.display = ['spread', 'ml', 'h1spread'].includes(ty) ? '' : 'none';
-    $('bSideWrap').style.display = ['total', 'h1total', 'prop'].includes(ty) ? '' : 'none';
+    $('bTeamWrap').style.display = ['spread', 'ml', 'h1spread', 'tt', 'h1tt'].includes(ty) ? '' : 'none';
+    $('bSideWrap').style.display = ['total', 'h1total', 'prop', 'tt', 'h1tt'].includes(ty) ? '' : 'none';
     $('bPropWrap').style.display = ty === 'prop' ? '' : 'none'; $('bLineWrap').style.display = ty === 'ml' ? 'none' : '';
-    $('bLineLab').textContent = ty.includes('spread') ? 'Spread for that team (e.g. -6.5 or +3)' : 'Line';
+    $('bLineLab').textContent = ty.includes('spread') ? 'Spread for that team (e.g. -6.5 or +3)' : ty.endsWith('tt') ? 'Team total line (e.g. 72.5)' : 'Line';
+    $('bLine').placeholder = ty.endsWith('tt') ? (() => { const pp = S.proj.get(g.gid); const v = ty === 'tt' ? (pp && (isH ? pp.projH ?? pp.pre?.h : pp.projA ?? pp.pre?.a)) : (pp && pp.h1 && !pp.h1.final ? (isH ? pp.h1.projH : pp.h1.projA) : null); return v != null ? 'Model projects ' + v.toFixed(1) : 'e.g. 72.5'; })() : '';
     let L = '', O = -110;
     if (ty === 'spread' && ln && ln.homeSpread != null){ L = isH ? ln.homeSpread : -ln.homeSpread; O = (isH ? ln.spOddsH : ln.spOddsA) ?? -110; }
     if (ty === 'total' && ln && ln.total != null){ L = ln.total; O = ($('bSide').value === 'o' ? ln.overOdds : ln.underOdds) ?? -110; }
@@ -1592,8 +1599,8 @@ function openBetForm(gid){
     if (ty !== 'ml' && line == null){ $('bLine').focus(); return; } if (odds == null || Math.abs(odds) < 100){ $('bOdds').focus(); return; }
     const b = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), gid: g.gid, day: S.games.has(g.gid) ? S.date : (myBets().find(x => x.gid === g.gid) || {}).day || S.date,
       match: `${g.away.abbr} @ ${g.home.abbr}`, matchLong: `${g.away.name} @ ${g.home.name}`, date: g.date, type: ty, line: ty === 'ml' ? null : line, odds, stake, unit: $('bUnit').value, book: $('bBook').value.trim(), created: Date.now(), status: 'open' };
-    if (['spread', 'ml', 'h1spread'].includes(ty)){ b.team = team; b.teamAbbr = isH ? g.home.abbr : g.away.abbr; }
-    if (['total', 'h1total', 'prop'].includes(ty)) b.side = $('bSide').value;
+    if (['spread', 'ml', 'h1spread', 'tt', 'h1tt'].includes(ty)){ b.team = team; b.teamAbbr = isH ? g.home.abbr : g.away.abbr; }
+    if (['total', 'h1total', 'prop', 'tt', 'h1tt'].includes(ty)) b.side = $('bSide').value;
     if (ty === 'prop'){ const sel = $('bPlayer'); if (sel){ b.playerId = sel.value; b.player = sel.selectedOptions[0].dataset.name; } else { b.player = $('bPlayerTxt').value.trim(); if (!b.player) return; } b.stat = $('bStat').value; }
     const list = myBets(); list.push(b); saveBets(list); updateBetsNav();
     document.getElementById('betModal').classList.remove('open'); if (S.view === 'board') renderBoard(); if (S.view === 'bets') renderBets();
