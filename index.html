@@ -470,17 +470,32 @@ function favFromDetails(details, g){
   if (ab === String(g.away?.abbr || '').toUpperCase()) return 'a';
   return null;
 }
+function swapSides(r){ // the line was saved with home/away the other way around
+  const sw = (x, y) => { const t = r[x]; r[x] = r[y]; r[y] = t; };
+  if (r.homeSpread != null) r.homeSpread = -r.homeSpread;
+  sw('mlH', 'mlA'); sw('spOddsH', 'spOddsA'); sw('homeId', 'awayId');
+  if (r.open){ r.open = Object.assign({}, r.open); if (r.open.homeSpread != null) r.open.homeSpread = -r.open.homeSpread; const t = r.open.mlH; r.open.mlH = r.open.mlA; r.open.mlA = t; }
+}
 function fixLineSign(r, g){
-  if (!r || r.homeSpread == null || Math.abs(r.homeSpread) < 1) return r;
-  let fav = null;
-  if (r.mlH != null && r.mlA != null && r.mlH !== r.mlA) fav = r.mlH < r.mlA ? 'h' : 'a';
-  if (!fav) fav = favFromDetails(r.details, g);
-  if (!fav) return r;
-  const spreadFav = r.homeSpread < 0 ? 'h' : 'a';
-  if (spreadFav === fav) return r;
-  r.homeSpread = -r.homeSpread;
-  if (r.open && r.open.homeSpread != null && Math.sign(r.open.homeSpread) === -Math.sign(r.homeSpread)) r.open = Object.assign({}, r.open, { homeSpread: -r.open.homeSpread });
-  r.signFixed = true;
+  if (!r || !g) return r;
+  const hid = String(g.home?.id || ''), aid = String(g.away?.id || '');
+  // 1) line remembers which team was home when it was saved; if ESPN later swapped home/away, swap the line too
+  if (r.homeId && hid && r.homeId !== hid && r.homeId === aid){ swapSides(r); r.signFixed = true; }
+  else if (r.homeSpread != null && Math.abs(r.homeSpread) >= 1){
+    const spFav = r.homeSpread < 0 ? 'h' : 'a';
+    const mlFav = r.mlH != null && r.mlA != null && r.mlH !== r.mlA ? (r.mlH < r.mlA ? 'h' : 'a') : null;
+    const txtFav = favFromDetails(r.details, g); // "HOU -17.5" names the team, so it can't be from the wrong side
+    if (txtFav){
+      if (spFav !== txtFav){ if (mlFav && mlFav !== txtFav) swapSides(r); else r.homeSpread = -r.homeSpread; r.signFixed = true; }
+      else if (mlFav && mlFav !== txtFav){ swapSides(r); r.homeSpread = -r.homeSpread; r.signFixed = true; } // only the moneylines are reversed
+    } else if (mlFav && spFav !== mlFav){ r.homeSpread = -r.homeSpread; r.signFixed = true; }
+  }
+  // 2) the opening spread can't be on the other side of a big favorite
+  if (r.open && r.open.homeSpread != null && r.homeSpread != null && Math.abs(r.open.homeSpread) >= 3 && Math.abs(r.homeSpread) >= 3 && Math.sign(r.open.homeSpread) !== Math.sign(r.homeSpread)){
+    r.open = Object.assign({}, r.open, { homeSpread: -r.open.homeSpread });
+    if (r.open.mlH != null && r.open.mlA != null && (r.open.mlH < r.open.mlA) !== (r.homeSpread < 0)){ const t = r.open.mlH; r.open.mlH = r.open.mlA; r.open.mlA = t; }
+  }
+  if (hid){ r.homeId = hid; r.awayId = aid; }
   return r;
 }
 
@@ -1063,7 +1078,7 @@ function logSnapshot(g, p){
 function endEl(g){ return g.period > 2 ? 2400 + (g.period - 2)*300 : 2400; }
 function scoreAt(det, el){ let h = 0, a = 0; for (const p of det.plays){ if (p.el <= el && p.h != null && p.a != null){ h = p.h; a = p.a; } } return { h, a }; }
 function upsetInfo(g){
-  const ln = g.pregameLine || g.odds; if (!ln || ln.homeSpread == null || ln.homeSpread === 0) return null;
+  const ln = fixLineSign(g.pregameLine || g.odds, g); if (!ln || ln.homeSpread == null || ln.homeSpread === 0) return null;
   if (g.home.score == null || g.away.score == null) return null;
   const dogH = ln.homeSpread > 0, dog = dogH ? g.home : g.away, fav = dogH ? g.away : g.home, pts = Math.abs(ln.homeSpread);
   const margin = dog.score - fav.score, p = S.proj.get(g.gid);
