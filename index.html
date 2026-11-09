@@ -461,6 +461,29 @@ function teamColorById(id){ return TEAM_COLORS[id] || '#3a3f47'; }
 
 function statArr(arr){ const m = {}; for (const s of arr || []) { if (s && s.name) m[s.name] = s.displayValue ?? s.value; } return m; }
 
+/* Safety check: the spread's favorite must agree with the moneyline (and ESPN's "ABBR -x" text).
+   If a feed hands us the sign from the wrong side, flip it rather than show a 17-point favorite as an underdog. */
+function favFromDetails(details, g){
+  const m = String(details || '').match(/^(.+?)\s+-\d+(\.\d+)?$/); if (!m || !g) return null;
+  const ab = m[1].trim().toUpperCase();
+  if (ab === String(g.home?.abbr || '').toUpperCase()) return 'h';
+  if (ab === String(g.away?.abbr || '').toUpperCase()) return 'a';
+  return null;
+}
+function fixLineSign(r, g){
+  if (!r || r.homeSpread == null || Math.abs(r.homeSpread) < 1) return r;
+  let fav = null;
+  if (r.mlH != null && r.mlA != null && r.mlH !== r.mlA) fav = r.mlH < r.mlA ? 'h' : 'a';
+  if (!fav) fav = favFromDetails(r.details, g);
+  if (!fav) return r;
+  const spreadFav = r.homeSpread < 0 ? 'h' : 'a';
+  if (spreadFav === fav) return r;
+  r.homeSpread = -r.homeSpread;
+  if (r.open && r.open.homeSpread != null && Math.sign(r.open.homeSpread) === -Math.sign(r.homeSpread)) r.open = Object.assign({}, r.open, { homeSpread: -r.open.homeSpread });
+  r.signFixed = true;
+  return r;
+}
+
 function parseEspnOdds(o, g){
   if (!o) return null;
   const book = (o.provider && o.provider.name) || 'ESPN odds feed';
@@ -493,7 +516,7 @@ function parseEspnOdds(o, g){
     details: o.details || null, ts: Date.now()
   };
   if (r.total == null && r.homeSpread == null && r.mlH == null) return null;
-  return r;
+  return fixLineSign(r, g);
 }
 
 function parseEvent(ev){
@@ -709,21 +732,27 @@ async function fetchProxyOdds(){
     const findGame = ev => { let best = null, bs = 0; const t = Date.parse(ev.commence_time);
       for (const g of S.games.values()){
         if (t && Math.abs(Date.parse(g.date) - t) > 4*3600e3) continue;
-        const sh = Math.max(nameSim(ev.home_team, g.home.name), normName(ev.home_team) === normName(g.home.name) ? 1 : 0), sa = Math.max(nameSim(ev.away_team, g.away.name), normName(ev.away_team) === normName(g.away.name) ? 1 : 0);
-        const sc = Math.min(sh, sa); if (sc > bs){ bs = sc; best = g; } }
+        const sim = (x, y) => Math.max(nameSim(x, y), normName(x) === normName(y) ? 1 : 0);
+        const sc = Math.min(sim(ev.home_team, g.home.name), sim(ev.away_team, g.away.name));
+        const sw = Math.min(sim(ev.away_team, g.home.name), sim(ev.home_team, g.away.name)); // feed lists home/away the other way
+        if (sc > bs){ bs = sc; best = { g, flip: false }; }
+        if (sw > bs){ bs = sw; best = { g, flip: true }; } }
       return bs >= 0.5 ? best : null; };
     S.extraOdds.clear(); let matched = 0;
     for (const ev of evs){
-      const g = findGame(ev); if (!g) continue; matched++; const list = []; if (ev.id) S.oddsEventId.set(g.gid, ev.id);
+      const fm = findGame(ev); if (!fm) continue; const g = fm.g; matched++; const list = []; if (ev.id) S.oddsEventId.set(g.gid, ev.id);
+      const HN = fm.flip ? ev.away_team : ev.home_team, AN = fm.flip ? ev.home_team : ev.away_team; // names as ESPN's home / away
+      S.oddsFlip = S.oddsFlip || new Map(); S.oddsFlip.set(g.gid, fm.flip);
       for (const b of ev.bookmakers || []){
         const mk = k => (b.markets || []).find(m => m.key === k);
         const h2h = mk('h2h'), sp = mk('spreads'), to = mk('totals');
         const o = (m, nm) => m && (m.outcomes || []).find(x => x.name === nm);
         const title = (BOOK_KEYS.find(k => k[0] === b.key) || [])[1] || b.title || b.key;
         const r2 = { src: 'proxy:' + b.key, key: b.key, book: title, ts: Date.parse(b.last_update) || Date.now(), live: Date.parse(ev.commence_time) < Date.now(),
-          mlH: o(h2h, ev.home_team)?.price ?? null, mlA: o(h2h, ev.away_team)?.price ?? null,
-          homeSpread: o(sp, ev.home_team)?.point ?? null, spOddsH: o(sp, ev.home_team)?.price ?? null, spOddsA: o(sp, ev.away_team)?.price ?? null,
+          mlH: o(h2h, HN)?.price ?? null, mlA: o(h2h, AN)?.price ?? null,
+          homeSpread: o(sp, HN)?.point ?? null, spOddsH: o(sp, HN)?.price ?? null, spOddsA: o(sp, AN)?.price ?? null,
           total: o(to, 'Over')?.point ?? null, overOdds: o(to, 'Over')?.price ?? null, underOdds: o(to, 'Under')?.price ?? null };
+        fixLineSign(r2, g);
         const fk = g.gid + '|' + b.key; if (!S.firstSeen.has(fk)) S.firstSeen.set(fk, { homeSpread: r2.homeSpread, total: r2.total, mlH: r2.mlH, mlA: r2.mlA });
         r2.open = S.firstSeen.get(fk); r2.openIsFirstSeen = true;
         list.push(r2); recordOdds(g, r2);
@@ -741,16 +770,16 @@ async function fetchH1Lines(gid){
   try {
     const j = await Net.get(`${base}/ncaab-1h?event=${id}`, { timeout: 15000, ttl: 5*60e3 });
     if (!j || j.error) throw new Error(j && j.error || 'no data');
-    const list = parseH1(j); S.h1Lines.set(gid, list); return list;
+    const list = parseH1(j, S.oddsFlip && S.oddsFlip.get(gid)); S.h1Lines.set(gid, list); return list;
   } catch (e){ bad('proxy', 'first-half: ' + (e.message || e)); return null; }
 }
-function parseH1(ev){
-  const out = [];
+function parseH1(ev, flip){
+  const out = []; const HN = flip ? ev.away_team : ev.home_team, AN = flip ? ev.home_team : ev.away_team;
   for (const b of ev.bookmakers || []){
     const mk = k => (b.markets || []).find(m => m.key === k); const o = (m, nm) => m && (m.outcomes || []).find(x => x.name === nm);
     const sp = mk('spreads_h1'), to = mk('totals_h1');
     const r = { key: b.key, book: (BOOK_KEYS.find(k => k[0] === b.key) || [])[1] || b.title || b.key, ts: Date.parse(b.last_update) || Date.now(),
-      homeSpread: o(sp, ev.home_team)?.point ?? null, spOddsH: o(sp, ev.home_team)?.price ?? null, spOddsA: o(sp, ev.away_team)?.price ?? null,
+      homeSpread: o(sp, HN)?.point ?? null, spOddsH: o(sp, HN)?.price ?? null, spOddsA: o(sp, AN)?.price ?? null,
       total: o(to, 'Over')?.point ?? null, overOdds: o(to, 'Over')?.price ?? null, underOdds: o(to, 'Under')?.price ?? null };
     if (r.homeSpread != null || r.total != null) out.push(r);
   }
@@ -1634,7 +1663,7 @@ function updateBetsNav(){ const n = myBets().filter(b => b.status === 'open').le
 async function refreshBetGames(){
   const open = myBets().filter(b => b.status === 'open'); if (!open.length){ settleBets(); return; }
   const days = [...new Set(open.map(b => b.day))].filter(d => d !== S.date);
-  await Promise.all(days.map(d => fetchScoreboard(d).then(list => { for (const g of list) if (open.some(b => b.gid === g.gid)){ const prev = S.betGames.get(g.gid); if (prev && prev.pregameLine) g.pregameLine = prev.pregameLine; S.betGames.set(g.gid, g); } }).catch(() => {})));
+  await Promise.all(days.map(d => fetchScoreboard(d).then(list => { for (const g of list) if (open.some(b => b.gid === g.gid)){ const prev = S.betGames.get(g.gid); if (prev && prev.pregameLine) g.pregameLine = fixLineSign(prev.pregameLine, g); S.betGames.set(g.gid, g); } }).catch(() => {})));
   const need = [...new Set(open.map(b => b.gid))].map(betGame).filter(g => g && g.status !== 'pre' && g.status !== 'other');
   await Promise.all(need.filter(g => !S.games.has(g.gid) || !S.details.has(g.gid) || g.status === 'post' || Date.now() - (S.details.get(g.gid)?.ts || 0) > 20e3)
     .map(g => fetchSummary(g.gid).then(() => { if (!S.games.has(g.gid)){ const p = project(g); if (p) S.proj.set(g.gid, p); } }).catch(() => {})));
@@ -2980,6 +3009,7 @@ async function refreshScoreboard(token = loadToken){
     const list = await fetchScoreboard(S.date); if (token !== loadToken) return;
     for (const g of list){ const prev = S.games.get(g.gid); if (prev){ g.pregameLine = prev.pregameLine; }
       if (!g.pregameLine){ const stored = await DB.get('games', g.gid); if (stored && stored.pregameLine) g.pregameLine = stored.pregameLine; }
+      if (g.pregameLine) fixLineSign(g.pregameLine, g);
       S.games.set(g.gid, g); if (g.odds) recordOdds(g, g.odds); }
     for (const id of [...S.games.keys()]) if (!list.find(g => g.gid === id)) S.games.delete(id);
     for (const g of S.games.values()) recompute(g);
