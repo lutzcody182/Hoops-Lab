@@ -1639,7 +1639,7 @@ function betTracker(done){
   const fmtP = v => money(v, true);
   const agg = () => ({ n: 0, w: 0, l: 0, p: 0, risk: 0, profit: 0 });
   const add = (a, b, sign = 1) => { a.n++; if (b.status === 'won') a.w++; else if (b.status === 'lost') a.l++; else a.p++; if (b.status !== 'push') a.risk += b.stake; a.profit += sign*(b.profit || 0); };
-  const row = (label, a, extra = '') => `<tr><td style="text-align:left">${label}</td><td class="num">${a.n}</td><td class="num">${a.w}-${a.l}${a.p ? '-' + a.p : ''}</td><td class="num">${a.w + a.l ? pct(a.w/(a.w + a.l), 0) : '—'}</td><td class="num">${money(a.risk)}</td><td class="num"><b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b></td><td class="num">${a.risk ? sgn(a.profit/a.risk*100, 1) + '%' : '—'}</td>${extra}</tr>`;
+  const row = (label, a, extra = '', sortKey) => `<tr><td style="text-align:left" ${sortKey != null ? `data-v="${sortKey}"` : ''}>${label}</td><td class="num">${a.n}</td><td class="num" data-v="${a.w + a.l ? a.w/(a.w + a.l) + a.w*1e-6 : ''}">${a.w}-${a.l}${a.p ? '-' + a.p : ''}</td><td class="num" data-v="${a.w + a.l ? a.w/(a.w + a.l) : ''}">${a.w + a.l ? pct(a.w/(a.w + a.l), 0) : '—'}</td><td class="num" data-v="${a.risk}">${money(a.risk)}</td><td class="num" data-v="${a.profit}"><b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b></td><td class="num" data-v="${a.risk ? a.profit/a.risk : ''}">${a.risk ? sgn(a.profit/a.risk*100, 1) + '%' : '—'}</td>${extra}</tr>`;
   const head = (first, extra = '') => `<thead><tr><th style="text-align:left">${first}</th><th>Bets</th><th>Record</th><th>Win %</th><th>Risked</th><th>Profit</th><th>ROI</th>${extra}</tr></thead>`;
   const tab = S.trkTab || 'type'; let table = '';
   if (tab === 'type'){
@@ -1657,19 +1657,20 @@ function betTracker(done){
         if (b.type === 'tt' || b.type === 'h1tt'){ add(get(picked)[b.side === 'u' ? 'ttu' : 'tto'], b); }   // team totals: only the team on the ticket
         else { add(get(picked).on, b); add(get(opp).vs, b); } } }                                     // spreads & moneylines: head-to-head
     const cell = a => a.n ? `${a.w}-${a.l}${a.p ? '-' + a.p : ''} · <b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${fmtP(a.profit)}</b>` : '—';
-    table = `<thead><tr><th style="text-align:left">Team</th><th title="Every settled bet on games this team played">Bets in their games</th><th>Record</th><th title="Total profit from all bets on this team's games">Profit (all)</th><th title="Spreads and moneylines (full game and 1st half) where you picked this team">Backing them</th><th title="Spreads and moneylines where you picked their opponent">Against them</th><th title="This team's own team-total bets (full game and 1st half)">Team totals: overs</th><th>Team totals: unders</th></tr></thead><tbody>` +
-      Object.values(T).sort((a, b) => b.all.profit - a.all.profit).map(x => `<tr><td style="text-align:left">${/^abbr:/.test(x.t.id) ? esc(x.t.name || x.t.abbr) : `<span class="tlink" data-team="${esc(x.t.id)}">${esc(x.t.name || x.t.abbr)}</span>`}</td><td class="num">${x.all.n}</td><td class="num">${x.all.w}-${x.all.l}${x.all.p ? '-' + x.all.p : ''}</td><td class="num"><b class="${x.all.profit > 0 ? 'good' : x.all.profit < 0 ? 'bad' : ''}">${fmtP(x.all.profit)}</b></td><td class="num">${cell(x.on)}</td><td class="num">${cell(x.vs)}</td><td class="num">${cell(x.tto)}</td><td class="num">${cell(x.ttu)}</td></tr>`).join('') + '</tbody>';
+    const cv = a => a.n ? a.profit : '';   // these columns sort by money won/lost
+    table = `<thead><tr><th style="text-align:left">Team</th><th title="Every settled bet on games this team played">Bets in their games</th><th>Record</th><th title="Total profit from all bets on this team's games">Profit (all)</th><th title="Spreads and moneylines (full game and 1st half) where you picked this team — sorts by money won/lost">Backing them</th><th title="Spreads and moneylines where you picked their opponent — sorts by money won/lost">Against them</th><th title="This team's own team-total over bets — sorts by money won/lost">Team totals: overs</th><th title="Sorts by money won/lost">Team totals: unders</th></tr></thead><tbody>` +
+      Object.values(T).sort((a, b) => b.all.profit - a.all.profit).map(x => `<tr><td style="text-align:left">${/^abbr:/.test(x.t.id) ? esc(x.t.name || x.t.abbr) : `<span class="tlink" data-team="${esc(x.t.id)}">${esc(x.t.name || x.t.abbr)}</span>`}</td><td class="num">${x.all.n}</td><td class="num" data-v="${x.all.w + x.all.l ? x.all.w/(x.all.w + x.all.l) + x.all.w*1e-6 : ''}">${x.all.w}-${x.all.l}${x.all.p ? '-' + x.all.p : ''}</td><td class="num" data-v="${x.all.profit}"><b class="${x.all.profit > 0 ? 'good' : x.all.profit < 0 ? 'bad' : ''}">${fmtP(x.all.profit)}</b></td><td class="num" data-v="${cv(x.on)}">${cell(x.on)}</td><td class="num" data-v="${cv(x.vs)}">${cell(x.vs)}</td><td class="num" data-v="${cv(x.tto)}">${cell(x.tto)}</td><td class="num" data-v="${cv(x.ttu)}">${cell(x.ttu)}</td></tr>`).join('') + '</tbody>';
   } else if (tab === 'book'){
     const g = {}; for (const b of L){ const k = b.book || 'Not entered'; (g[k] = g[k] || agg()); add(g[k], b); }
     table = head('Sportsbook') + '<tbody>' + Object.entries(g).sort((a, b) => b[1].n - a[1].n).map(([k, a]) => row(esc(k), a)).join('') + '</tbody>';
   } else if (tab === 'month'){
-    const g = {}; for (const b of L){ const k = new Date(b.date || b.settledAt).toLocaleDateString([], { year: 'numeric', month: 'long' }); (g[k] = g[k] || agg()); add(g[k], b); }
-    table = head('Month') + '<tbody>' + Object.entries(g).map(([k, a]) => row(esc(k), a)).join('') + '</tbody>';
+    const g = {}, when = {}; for (const b of L){ const d = new Date(b.date || b.settledAt); const k = d.toLocaleDateString([], { year: 'numeric', month: 'long' }); when[k] = d.getFullYear()*12 + d.getMonth(); (g[k] = g[k] || agg()); add(g[k], b); }
+    table = head('Month') + '<tbody>' + Object.entries(g).sort((a, b) => when[a[0]] - when[b[0]]).map(([k, a]) => row(esc(k), a, '', when[k])).join('') + '</tbody>';
   } else if (tab === 'odds'){
     const bk = b => b.odds <= -200 ? 'Heavy favorite (−200 or shorter)' : b.odds < -125 ? 'Favorite (−199 to −126)' : b.odds <= 125 ? 'Near even (−125 to +125)' : b.odds < 200 ? 'Underdog (+126 to +199)' : 'Long shot (+200 or longer)';
     const order = ['Heavy favorite (−200 or shorter)', 'Favorite (−199 to −126)', 'Near even (−125 to +125)', 'Underdog (+126 to +199)', 'Long shot (+200 or longer)'];
     const g = {}; for (const b of L){ const k = bk(b); (g[k] = g[k] || agg()); add(g[k], b); }
-    table = head('Odds range') + '<tbody>' + order.filter(k => g[k]).map(k => row(esc(k), g[k])).join('') + '</tbody>';
+    table = head('Odds range') + '<tbody>' + order.filter(k => g[k]).map(k => row(esc(k), g[k], '', order.indexOf(k))).join('') + '</tbody>';
   }
   // cumulative profit chart
   let cum = 0; const pts = L.map((b, i) => { cum += b.profit || 0; return [i + 1, +cum.toFixed(2)]; });
@@ -2594,7 +2595,9 @@ function seasonLineupHtml(LU, id){
 
 /* ---------- click-to-sort tables (sort choice is remembered per table) ---------- */
 function cellSortVal(td){
-  const t = (td.textContent || '').trim();
+  if (td.dataset && td.dataset.v !== undefined) return td.dataset.v === '' ? null : parseFloat(td.dataset.v);   // explicit sort value
+  const t = (td.textContent || '').trim().replace(/−/g, '-');
+  const money = t.match(/^([+\-]?)\$([\d,]+(\.\d+)?)/); if (money) return (money[1] === '-' ? -1 : 1)*parseFloat(money[2].replace(/,/g, ''));
   if (!t || /^(—|n\/a|-)$/.test(t) || /^n\/a/.test(t)) return null;
   let m = t.match(/^(\d+)-(\d+)(?:-(\d+))?\b/); if (m && !/^\d+-\d+\s*\d/.test(t.replace(/\s+/g, ' ')) && t.length <= 9){ const w = +m[1], l = +m[2]; return w + l ? w/(w + l) + w*1e-6 : 0; }
   m = t.replace(/^#/, '').match(/^[+\-−]?\d+(\.\d+)?/); if (m) return parseFloat(m[0].replace('−', '-'));
