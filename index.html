@@ -153,6 +153,67 @@ tr.dnp td{color:var(--text-muted)}
 .modal label{display:block;margin:10px 0 4px;font-size:12px;color:var(--text-secondary)}
 .modal input{width:100%}
 .close{float:right}
+
+/* ===================== Visual refresh: cleaner look + team colors ===================== */
+:root{ --bg:#0d0e10; --surface-1:#16181b; --surface-2:#1d2024; --surface-3:#272a30; --border:#2b2f36; --line:rgba(255,255,255,.07);
+  --radius:14px; --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.18); --accent:#3b82f6; --ca:#3a3f47; --ch:#3a3f47; }
+html,body{font:14px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+header.top{background:rgba(13,14,16,.86);backdrop-filter:saturate(1.4) blur(12px);border-bottom:1px solid var(--line)}
+.bar{padding:12px 20px;gap:12px}.days,.filters{padding-left:20px;padding-right:20px}
+.brand{font-size:19px;letter-spacing:-.3px}.brand small{font-size:11px;margin-top:1px}
+.btn{background:var(--surface-2);border:1px solid var(--line);transition:background .15s,border-color .15s,color .15s}
+.btn:hover{background:var(--surface-3);border-color:rgba(255,255,255,.12)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.tabs-main .btn{padding:6px 14px;font-weight:600;font-size:13px}
+select,input[type=text],input[type=date],input[type=url],input[type=number]{border:1px solid var(--line);background:var(--surface-2);border-radius:9px}
+.day{border:1px solid var(--line);border-radius:10px;padding:5px 12px}.day.sel{background:rgba(59,130,246,.12)}
+.status-line{border-top:1px solid var(--line);padding:7px 20px;gap:18px}
+main{padding:18px 20px 70px}
+.grid{gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+.notice{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:12px}
+/* game cards */
+.card{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--line);box-shadow:var(--shadow);padding:14px 16px 12px;transition:transform .15s ease,border-color .15s ease}
+.card::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,var(--ca) 0 50%,var(--ch) 50% 100%)}
+.card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.16)}
+.card.live{border-left:1px solid var(--line);box-shadow:var(--shadow),inset 0 0 0 1px rgba(230,103,103,.25)}
+.card .meta{margin-bottom:8px;align-items:center}
+.pill{border-radius:999px;padding:2px 9px;font-size:10.5px;letter-spacing:.3px}
+.pill.live{background:rgba(230,103,103,.15);color:#ff9d9d}
+.trow{gap:10px;padding:4px 0}
+.trow .logo{flex:0 0 30px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 2px var(--tc,#3a3f47)}
+.trow .logo img{width:20px;height:20px;object-fit:contain}
+.trow .nm{font-size:14.5px;font-weight:650;letter-spacing:-.1px}
+.trow .sc{font-size:23px;font-weight:800;letter-spacing:-.5px;min-width:38px}
+.trow.lose .nm,.trow.lose .sc{color:#6f727a}
+.kv{border-top:1px solid var(--line);margin-top:10px;padding-top:10px;gap:8px 12px}
+.kv div span{font-size:9.5px;letter-spacing:.6px;margin-bottom:1px}
+.kv b{font-size:13px}
+.tm5{background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:10px;padding:7px 10px;margin-top:8px}
+.cover{font-size:11.5px;margin-top:7px}
+.upd{margin-top:8px;opacity:.85}
+/* sections, tiles, tables */
+.section{border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
+.section h3{font-size:15px;letter-spacing:-.2px;margin-bottom:10px}
+.tile{background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:12px;padding:11px 12px}
+.tile b{letter-spacing:-.4px}
+th{text-transform:uppercase;letter-spacing:.5px;font-size:10.5px;background:var(--surface-1)}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px}
+tbody tr:hover td{background:rgba(255,255,255,.025)}
+tr.tot td{border-top:1px solid rgba(255,255,255,.18)}
+/* game panel header in team colors */
+.panel{background:var(--bg)}
+.phead{background:linear-gradient(100deg,color-mix(in srgb,var(--ca) 26%,var(--surface-1)) 0%,var(--surface-1) 42%,var(--surface-1) 58%,color-mix(in srgb,var(--ch) 26%,var(--surface-1)) 100%);border-bottom:1px solid var(--line);padding:14px 20px}
+.phead .scoreline .tm img{width:40px;height:40px}
+.phead .big{font-size:34px;letter-spacing:-1px}
+.pbody{padding:18px 20px}
+.ptabs .btn{border-radius:999px}
+.feed .col{border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.betcard{border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.teamhead{position:relative;overflow:hidden}
+.teamhead::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--tc,#3a3f47)}
+.tag,.tile span.tag,.kv div span.tag{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.6px;padding:1px 5px;border-radius:999px;border:1px solid rgba(255,255,255,.14);color:var(--text-muted);vertical-align:1px;margin:0 0 0 3px;text-transform:uppercase}
+.tile span{margin-bottom:3px}
+@media (max-width:700px){.bar{padding:10px 12px}main{padding:12px 12px 70px}.days,.filters{padding-left:12px;padding-right:12px}}
 </style>
 </head>
 <body>
@@ -384,6 +445,20 @@ function periodName(p){ return p === 1 ? '1st' : p === 2 ? '2nd' : p === 3 ? 'OT
 /* =========================================================================
    ESPN ADAPTER + PARSERS
    ========================================================================= */
+/* team colors: ESPN's primary color, lightened when it would be too dark to see on the dark theme */
+const TEAM_COLORS = (() => { try { return JSON.parse(localStorage.getItem('hl.colors') || '{}'); } catch { return {}; } })();
+function readableColor(hex, alt){
+  const parse = h => { h = String(h || '').replace('#', ''); if (!/^[0-9a-f]{6}$/i.test(h)) return null; return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+  const lum = c => { const f = v => { v /= 255; return v <= 0.03928 ? v/12.92 : Math.pow((v + 0.055)/1.055, 2.4); }; return 0.2126*f(c[0]) + 0.7152*f(c[1]) + 0.0722*f(c[2]); };
+  let c = parse(hex); const a = parse(alt);
+  if (c && lum(c) < 0.03 && a && lum(a) > lum(c) && lum(a) < 0.9) c = a;           // near-black primary: use the alternate color
+  if (!c) return null;
+  let L = lum(c), k = 0; while (L < 0.09 && k < 8){ c = c.map(v => Math.round(v + (255 - v)*0.18)); L = lum(c); k++; }   // lighten very dark colors
+  return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function teamColor(t){ if (!t) return '#3a3f47'; const id = t.id; if (t.color){ const c = readableColor(t.color, t.alt); if (c){ if (id && TEAM_COLORS[id] !== c){ TEAM_COLORS[id] = c; try { localStorage.setItem('hl.colors', JSON.stringify(TEAM_COLORS)); } catch {} } return c; } } return (id && TEAM_COLORS[id]) || '#3a3f47'; }
+function teamColorById(id){ return TEAM_COLORS[id] || '#3a3f47'; }
+
 function statArr(arr){ const m = {}; for (const s of arr || []) { if (s && s.name) m[s.name] = s.displayValue ?? s.value; } return m; }
 
 function parseEspnOdds(o, g){
@@ -428,7 +503,7 @@ function parseEvent(ev){
   const Hc = cs.find(c => c.homeAway === 'home') || cs[0] || {}, Ac = cs.find(c => c.homeAway === 'away') || cs[1] || {};
   const team = c => { const t = c.team || {}; const rk = c.curatedRank?.current;
     const rec = (c.records || []).find(r => r.type === 'total' || r.name === 'overall' || r.name === 'All Splits') || (c.records || [])[0];
-    return { id: String(t.id || ''), abbr: t.abbreviation || '', name: t.displayName || t.name || 'TBD', short: t.shortDisplayName || t.location || t.name || 'TBD', location: t.location || '', logo: t.logo || '', confId: t.conferenceId ? String(t.conferenceId) : null,
+    return { color: t.color || null, alt: t.alternateColor || null, id: String(t.id || ''), abbr: t.abbreviation || '', name: t.displayName || t.name || 'TBD', short: t.shortDisplayName || t.location || t.name || 'TBD', location: t.location || '', logo: t.logo || '', confId: t.conferenceId ? String(t.conferenceId) : null,
       rank: rk && rk <= 25 ? rk : null, record: rec ? rec.summary : null, score: c.score != null && c.score !== '' ? +c.score : null,
       lines: (c.linescores || []).map(l => num(l.value ?? l.displayValue)) }; };
   let status = type.state === 'pre' ? 'pre' : type.state === 'post' ? 'post' : 'in';
@@ -1270,7 +1345,7 @@ function teamRow(g, side){
   const t = g[side], o = g[side === 'home' ? 'away' : 'home'];
   const lose = g.status === 'post' && t.score != null && o.score != null && t.score < o.score;
   const poss = g.possession && g.possession === t.id && g.status === 'in' ? '<span class="poss" title="Possession">◀</span>' : '';
-  return `<div class="trow ${lose ? 'lose' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy">` : '<span style="width:22px"></span>'}
+  return `<div class="trow ${lose ? 'lose' : ''}"><span class="logo" style="--tc:${teamColor(t)}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy">` : ''}</span>
     <div class="nm">${t.rank ? `<span class="rk">${t.rank}</span>` : ''}${esc(t.short)}${t.record ? `<span class="rec">${esc(t.record)}</span>` : ''}${poss}</div>
     <div class="sc num">${g.status === 'pre' || g.status === 'other' ? '' : (t.score ?? '')}</div></div>`;
 }
@@ -1384,7 +1459,7 @@ function card(g){
   const luckNet = p && p.luckH && p.luckA ? p.luckH.luck - p.luckA.luck : null;
   const luckTxt = luckNet != null ? `<span class="model">${esc(luckNet >= 0 ? g.home.abbr : g.away.abbr)} ${sgn(Math.abs(luckNet), 1)}</span>` : (live ? '<span class="na">loading</span>' : '—');
   const conf = confOf(g.home); const conf2 = confOf(g.away);
-  return `<div class="card ${live ? 'live' : ''}" data-gid="${g.gid}">
+  return `<div class="card ${live ? 'live' : ''}" data-gid="${g.gid}" style="--ca:${teamColor(g.away)};--ch:${teamColor(g.home)}">
     <div class="meta"><span>${statusPill(g)} ${myBets().some(b => b.gid === g.gid) ? `<span class="pill bet" title="You have a bet on this game">🎟 ${myBets().filter(b => b.gid === g.gid).length}</span> ` : ''}${(() => { const u = upsetInfo(g); return u ? `<span class="pill upset" title="${esc(u.dog.abbr)} was a ${u.pts}-point underdog">${u.level === 'upset' ? 'UPSET!' : 'UPSET WATCH'}</span> ` : ''; })()}${g.broadcast ? esc(g.broadcast) : ''}</span><span>${esc(conf2 && conf && conf2 !== conf ? conf2 + ' / ' + conf : conf || '')}${g.neutral ? ' · N' : ''}</span></div>
     ${teamRow(g, 'away')}${teamRow(g, 'home')}
     <div class="kv">
@@ -1806,7 +1881,7 @@ function renderDetail(){
   if (!g){ P.innerHTML = `<div class="phead"><button class="btn sm close" data-closegame>Close</button>Game not on the loaded date.</div>`; return; }
   const scroll = P.scrollTop;
   const big = t => g.status === 'pre' || g.status === 'other' ? '' : `<span class="big num">${t.score ?? ''}</span>`;
-  P.innerHTML = `<div class="phead"><button class="btn sm close" data-closegame>Close ✕</button>
+  P.innerHTML = `<div class="phead" style="--ca:${teamColor(g.away)};--ch:${teamColor(g.home)}"><button class="btn sm close" data-closegame>Close ✕</button>
     <div class="scoreline">
       <div class="tm">${g.away.logo ? `<img src="${esc(g.away.logo)}" alt="">` : ''}${g.away.rank ? `<small>#${g.away.rank}</small>` : ''} <span class="tlink" data-team="${g.away.id}" title="Team page">${esc(g.away.name)}</span> <small class="na" style="font-style:normal">${esc(g.away.record || '')}</small></div>${big(g.away)}
       <span style="color:var(--text-muted)">@</span>${big(g.home)}
@@ -2469,7 +2544,7 @@ async function renderPlayer(){
     const trend = played.length >= 2 ? lineChart({ series: [{ name: 'Points', color: 'var(--away)', points: pts }, { name: 'Game Score', color: 'var(--home)', points: gs }], xMin: 1, xMax: Math.max(2, played.length), h: 200,
       xFmt: (v, l) => { const i = Math.round(v) - 1; return dates[i] ? (l ? `Game ${i + 1} · ${dates[i]}` : dates[i]) : ''; }, yFmt: (v, l) => l ? v.toFixed(1) : Math.round(v) }) : '<div class="note">Trend appears after 2 games.</div>';
     m.innerHTML = `<div style="margin-bottom:8px;display:flex;gap:6px"><button class="btn sm" data-team="${P.team}">← ${esc(teamN.name || 'Team page')}</button></div>
-      <div class="section"><div class="scoreline"><div class="tm"><span style="font-size:20px">${esc(name)}</span> <small class="na" style="font-style:normal">${esc(pos)} · ${esc(teamN.name || '')}</small></div></div>
+      <div class="section teamhead" style="--tc:${teamColorById(P.team)}"><div class="scoreline"><div class="tm"><span style="font-size:20px">${esc(name)}</span> <small class="na" style="font-style:normal">${esc(pos)} · ${esc(teamN.name || '')}</small></div></div>
       <div class="tiles" style="margin-top:10px">
         <div class="tile"><span>Games</span><b>${tot.g}</b><em>${tot.g ? (tot.min/tot.g).toFixed(1) + ' min per game' : ''}</em></div>
         <div class="tile"><span>Points</span><b>${pg('pts')}</b><em>per game</em></div><div class="tile"><span>Rebounds</span><b>${pg('reb')}</b></div><div class="tile"><span>Assists</span><b>${pg('ast')}</b></div>
@@ -2676,7 +2751,7 @@ async function renderTeam(){
         <td class="num">${gm.line === undefined ? '' : L && L.total != null ? L.total : NA}</td><td>${ou}</td>
         <td><button class="btn sm" data-hist="${gm.ev}" data-day="${day}">Game</button></td></tr>`; }).join('');
     m.innerHTML = `<div style="margin-bottom:8px"><button class="btn sm" data-view="rank">← Hoops Lab Top 25</button></div>
-      <div class="section"><div class="scoreline"><div class="tm">${n.logo ? `<img src="${esc(n.logo)}" alt="">` : ''}<span style="font-size:20px">${esc(n.name)}</span> <small class="na" style="font-style:normal">${esc((S.conf.get(id) || {}).name || (S.conf.get(id) || {}).abbr || '')}</small></div></div>
+      <div class="section teamhead" style="--tc:${teamColorById(id)}"><div class="scoreline"><div class="tm">${n.logo ? `<img src="${esc(n.logo)}" alt="">` : ''}<span style="font-size:20px">${esc(n.name)}</span> <small class="na" style="font-style:normal">${esc((S.conf.get(id) || {}).name || (S.conf.get(id) || {}).abbr || '')}</small></div></div>
       <div class="tiles" style="margin-top:10px">
         <div class="tile"><span>Record</span><b>${w}-${l}</b></div>
         <div class="tile"><span>Against the spread</span><b>${ac}-${al}${ap ? '-' + ap : ''}</b><em>${cm.length ? `avg ${sgn(mean(cm))} vs the line` : 'no lines yet'}</em></div>
