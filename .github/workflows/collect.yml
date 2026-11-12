@@ -188,12 +188,13 @@ jobs:
             const useGT = x => x.gt && x.gt.hpos >= 20 && x.gt.apos >= 20;
             for (const x of games){ if (useGT(x)){ x._hs = x.gt.hs; x._as = x.gt.as; x._hp = x.gt.hpos; x._ap = x.gt.apos; } else { x._hs = x.hs; x._as = x.as; x._hp = x.hp; x._ap = x.ap; } }
             const possOf = x => (x._hp + x._ap) / 2;
+            const fullPoss = x => (x.hp + x.ap) / 2; // tempo always uses the whole game (garbage-time filter is for efficiency only)
             let pts = 0, ps = 0; for (const x of games){ pts += x._hs + x._as; ps += 2 * possOf(x); }
             const lgEff = games.length > 40 ? pts / ps * 100 : H.LEAGUE.eff;
-            const lgT = games.length > 40 ? mean(games.map(x => possOf(x) * 40 / (40 + 5 * x.ot))) : H.LEAGUE.pace;
+            const lgT = games.length > 40 ? mean(games.map(x => fullPoss(x) * 40 / (40 + 5 * x.ot))) : H.LEAGUE.pace;
             const teams = new Set([...d1, ...games.flatMap(x => [x.h, x.a])]);
             const hcaEff = (H.LEAGUE.hcaPts / 2) / lgT * 100;
-            const K = 5; // last season counts as 5 games, so current-season results take over within a few weeks
+            const K = 3; // last season counts as 3 games (backtest: current-season results should take over faster), so current-season results take over within a few weeks
             const prior = {};
             for (const id of teams){ const p = prevSeasonStats(id, LOG.season); const reg = (v, m) => v == null || !isFinite(v) ? m : m + 0.65 * (v - m);
               prior[id] = { o: reg(p && p.ortg, lgEff), d: reg(p && p.drtg, lgEff), t: reg(p && p.pace, lgT), known: !!p }; }
@@ -210,7 +211,7 @@ jobs:
                   const ortg = (home ? x._hs : x._as) / poss * 100, drtg = (home ? x._as : x._hs) / poss * 100;
                   const adj = x.n ? 0 : (home ? hcaEff : -hcaEff);
                   const age = (nowT - Date.parse(x.day + 'T12:00:00Z')) / 86400e3, w = Math.pow(0.5, Math.max(0, age) / 45);
-                  O += w * (ortg - adj) * lgEff / op.d; D += w * (drtg + adj) * lgEff / op.o; T += w * (poss / mins) * lgT / op.t; W += w;
+                  O += w * (ortg - adj) * lgEff / op.d; D += w * (drtg + adj) * lgEff / op.o; T += w * (fullPoss(x) / mins) * lgT / op.t; W += w;
                 }
                 N[id] = { o: O / W, d: D / W, t: T / W };
               }
@@ -272,9 +273,16 @@ jobs:
             });
             // ranks for SOS
             const sosR = ranked.filter(id => out[id].sos != null).sort((a, b) => out[b].sos - out[a].sos); sosR.forEach((id, i) => out[id].sosRk = i + 1);
-            return { updated: Date.now(), season: LOG.season, games: games.length, lg: { eff: +lgEff.toFixed(2), t: +lgT.toFixed(2) }, teams: out,
+            // Non-D1 opponents (NAIA, D2, D3...): one shared rating measured from every D1-vs-non-D1 game
+            let nonD1 = null;
+            if (d1.size){ const ng = LOG.games.filter(x => x.hp && x.ap && (d1.has(x.h) !== d1.has(x.a)) && (!asOf || x.day <= asOf)); const O = [], Dd = [], Tt = [];
+              for (const x of ng){ const dh = d1.has(x.h), r = R[dh ? x.h : x.a]; if (!r) continue; const poss = fullPoss(x), mins = (40 + 5 * x.ot) / 40;
+                const adj = x.n ? 0 : (dh ? hcaEff : -hcaEff); // the D1 side's home edge
+                Dd.push(((dh ? x.hs : x.as) / poss * 100 - adj) * lgEff / r.o); O.push(((dh ? x.as : x.hs) / poss * 100 + adj) * lgEff / r.d); Tt.push((poss / mins) * lgT / r.t); }
+              if (O.length >= 20) nonD1 = { o: +mean(O).toFixed(1), d: +mean(Dd).toFixed(1), t: +mean(Tt).toFixed(1), n: O.length }; }
+            return { updated: Date.now(), season: LOG.season, games: games.length, lg: { eff: +lgEff.toFixed(2), t: +lgT.toFixed(2) }, teams: out, nonD1,
               lgFF: Object.fromEntries(FK.map(k => [k, rd(lgF[k])])), gtGames: games.filter(useGT).length,
-              method: 'Opponent- and home-court-adjusted offense/defense (points per 100 possessions) and tempo, iterated over every D1-vs-D1 game; garbage time (decided-game minutes) excluded when play-by-play allows; last season regressed 35% to average counts as 5 games; recent games weighted more (45-day half-life).' };
+              method: 'Opponent- and home-court-adjusted offense/defense (points per 100 possessions) and tempo, iterated over every D1-vs-D1 game; garbage time (decided-game minutes) excluded when play-by-play allows; last season regressed 35% to average counts as 3 games; tempo uses whole-game possessions; recent games weighted more (45-day half-life).' };
           }
 
           async function runDay(day){
@@ -378,6 +386,7 @@ jobs:
               D.snaps.push({ gid: g.gid, ts: now, el: p.el, status: g.status, h: g.home.score, a: g.away.score, projH: p.projH, projA: p.projA, projT: p.projT, projM: p.projM,
                 pHome: p.pHome, pOver: p.pOver ?? null, pCoverH: p.pCoverH ?? null, lineTotal: p.line?.total ?? null, lineSpread: p.line?.homeSpread ?? null, book: p.line?.book ?? null,
                 projPoss: p.projPossH != null ? (p.projPossH + p.projPossA) / 2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: 'collector',
+                ...(g.status === 'pre' && p.pre ? { ta: p.pre.totAdj || 0, dk: p.dk || 1 } : {}),
                 ...(g.status === 'pre' && p.pre && p.pre.market && p.pre.ratings ? { preM: [+p.pre.market.h.toFixed(2), +p.pre.market.a.toFixed(2)], preR: [+p.pre.ratings.h.toFixed(2), +p.pre.ratings.a.toFixed(2)] } : {}),
                 ...(p.h1 && !p.h1.final ? { projH1T: p.h1.projT, projH1M: p.h1.projM, lineH1Total: p.h1.line?.total ?? null, lineH1Spread: p.h1.line?.homeSpread ?? null } : {}) });
               status.snaps++;
@@ -415,7 +424,7 @@ jobs:
             for (const x of games){ const rh = T[x.h], ra = T[x.a]; if (!rh || !ra) continue; const poss = rh.t*ra.t/lg.t;
               const pred = poss*(rh.o*ra.d - ra.o*rh.d)/(lg.eff*100); res.push({ x, r: (x.hs - x.as) - pred }); }
             const home = res.filter(e => !e.x.n);
-            if (home.length){ const v = mean(home.map(e => e.r)); C.hca = { value: +Math.max(1.5, Math.min(4.5, v)).toFixed(2), raw: +v.toFixed(2), n: home.length, use: home.length >= 250, def: H.CAL_DEFAULTS.hca }; }
+            if (home.length){ const v = mean(home.map(e => e.r)); C.hca = { value: +Math.max(1.5, Math.min(7, v)).toFixed(2), raw: +v.toFixed(2), n: home.length, use: home.length >= 250, def: H.CAL_DEFAULTS.hca }; }
             const hcaV = C.hca ? C.hca.value : H.LEAGUE.hcaPts;
             const spots = { rest: {}, road: {} };
             for (const e of res){ const r = e.r - (e.x.n ? 0 : hcaV);
@@ -428,8 +437,19 @@ jobs:
             const pr = perf.filter(r => r.cps && r.cps.Pregame && r.cps.Pregame.preM && r.cps.Pregame.preR);
             if (pr.length){ let num = 0, den = 0; for (const r of pr){ const m = r.cps.Pregame.preM[0] - r.cps.Pregame.preM[1], q = r.cps.Pregame.preR[0] - r.cps.Pregame.preR[1], y = r.h - r.a; num += (y - q)*(m - q); den += (m - q)**2; }
               const w = den ? Math.max(0.5, Math.min(0.95, num/den)) : H.CAL_DEFAULTS.mktW; C.mktW = { value: +w.toFixed(3), n: pr.length, use: pr.length >= 150, def: H.CAL_DEFAULTS.mktW }; }
+            // 6) pregame total bias and 7) spread of outcomes (sim too wide/narrow), D1 games with a line only
+            const pl = perf.filter(r => r.d1 !== false && r.cps && r.cps.Pregame && r.cps.Pregame.lineSpread != null && r.cps.Pregame.projT != null);
+            if (pl.length){ const raw = pl.map(r => (r.cps.Pregame.projT - (r.cps.Pregame.ta || 0)) - (r.h + r.a)); const b = mean(raw), sh = pl.length/(pl.length + 100);
+              C.totAdj = { value: +Math.max(-6, Math.min(6, -b*sh)).toFixed(2), raw: +(-b).toFixed(2), n: pl.length, use: pl.length >= 150, def: 0 }; }
+            const inv = p => { let lo = -6, hi = 6; for (let i = 0; i < 60; i++){ const m = (lo + hi)/2; (0.5*(1 + erf(m/Math.SQRT2)) < p ? lo = m : hi = m); } return (lo + hi)/2; };
+            const sds = [], res2 = [];
+            for (const r of pl){ const c = r.cps.Pregame; if (c.pHome == null || c.pHome < 0.03 || c.pHome > 0.97 || Math.abs(c.projM) < 1) continue; const z = inv(c.pHome); if (Math.abs(z) < 0.08) continue;
+              const sd = c.projM/z/(c.dk || 1); if (sd > 4 && sd < 30) sds.push(sd); res2.push((r.h - r.a) - c.projM); }
+            if (sds.length >= 30){ sds.sort((a, b) => a - b); const simSd = sds[sds.length >> 1], realSd = Math.sqrt(mean(res2.map(v => v*v)));
+              C.disp = { value: +Math.max(0.7, Math.min(1.15, realSd/simSd)).toFixed(3), simSd: +simSd.toFixed(2), realSd: +realSd.toFixed(2), n: sds.length, use: sds.length >= 150, def: 1 }; }
             return C;
           }
+          function erf(x){ const t = 1/(1 + 0.3275911*Math.abs(x)), y = 1 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t*Math.exp(-x*x); return x >= 0 ? y : -y; }
 
           /* ---------- closing line value: did the line move toward the model's side? ---------- */
           function clvFor(D, meta){
@@ -458,9 +478,10 @@ jobs:
               if (el === 0) s = arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null);
               else { for (const x of arr) if (x.status !== 'pre' && x.el <= el + 1 && (!s || x.el >= s.el)) s = x; if (s && s.el < el - 240) s = null; }
               if (s) cps[name] = { el: s.el, h: s.h, a: s.a, projT: s.projT, projM: s.projM, pHome: s.pHome, naiveT: s.naiveT, lineTotal: s.lineTotal, lineSpread: s.lineSpread, projPoss: s.projPoss,
-                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}), ...(s.preM ? { preM: s.preM, preR: s.preR } : {}) };
+                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}), ...(s.preM ? { preM: s.preM, preR: s.preR } : {}), ...(s.ta != null ? { ta: s.ta, dk: s.dk } : {}) };
             }
-            perf.push({ gid: meta.gid, day: meta.day, home: meta.home, away: meta.away, conf: meta.conf, h: meta.h, a: meta.a, finalPoss: meta.finalPoss, ot: !!meta.ot, pregameLine: meta.pregameLine || null, cps, n: arr.length,
+            const D1s = new Set(S.conf.keys());
+            perf.push({ gid: meta.gid, d1: g && D1s.size ? D1s.has(String(g.home.id)) && D1s.has(String(g.away.id)) : undefined, day: meta.day, home: meta.home, away: meta.away, conf: meta.conf, h: meta.h, a: meta.a, finalPoss: meta.finalPoss, ot: !!meta.ot, pregameLine: meta.pregameLine || null, cps, n: arr.length,
               h1H: g && g.home.lines.length ? g.home.lines[0] : null, h1A: g && g.away.lines.length ? g.away.lines[0] : null, clv: clvFor(D, meta) });
             perfIds.add(meta.gid);
           }
@@ -519,6 +540,8 @@ jobs:
             // shot model: D1 make rates by zone from every logged shot location
             const bins = {}; for (const x of LOG.games) if (x.sq) for (const sd of ['h', 'a']) for (const [b, [a, m]] of Object.entries(x.sq[sd] || {})){ bins[b] = bins[b] || { a: 0, m: 0 }; bins[b].a += a; bins[b].m += m; }
             S.shotModel = { updated: Date.now(), bins }; writeJ('shotmodel.json', S.shotModel);
+            { const D1s = new Set(S.conf.keys()); if (D1s.size){ const byG = new Map(LOG.games.map(x => [x.gid, x]));
+              for (const r of perf) if (r.d1 === undefined){ const x = byG.get(r.gid); if (x) r.d1 = D1s.has(String(x.h)) && D1s.has(String(x.a)); } } } // tag older results D1-vs-D1 or not
             CALIB = calibrate(ratings); H.applyCalib(CALIB); writeJ('calib.json', CALIB);
             // Daily rating history (net, rank, off, def, tempo per team) for trend lines; backfills missing days from the game log
             const HIST = readJ('ratings-history.json', null);
@@ -542,7 +565,6 @@ jobs:
             writeJ('status.json', status);
             console.log(JSON.stringify(status, null, 1));
           })().catch(e => { console.error(e); process.exit(1); });
-
           HOOPS_EOF
           node /tmp/collector.js
 
