@@ -1768,8 +1768,13 @@ function betTeams(b){
 }
 function betTracker(done){
   if (!done.length) return `<div class="section"><h3>Season tracker</h3><div class="note">Your results by bet type, team, sportsbook and month show up here once bets settle.</div></div>`;
-  const range = S.trkRange || 'all', cut = range === '7' ? Date.now() - 7*86400e3 : range === '30' ? Date.now() - 30*86400e3 : 0;
-  const L = done.filter(b => (b.settledAt || 0) >= cut).sort((a, b) => (a.settledAt || 0) - (b.settledAt || 0));
+  // Date ranges go by the day the game was played (your local time), so a late game that settles after midnight still counts for its game day
+  const dayOf = b => { const d = new Date(b.date || b.settledAt || 0); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+  const now0 = new Date(), today0 = new Date(now0.getFullYear(), now0.getMonth(), now0.getDate()).getTime(), dayMs = 86400e3;
+  const daysAgo = n => new Date(now0.getFullYear(), now0.getMonth(), now0.getDate() - n).getTime();
+  const RANGES = [['today', 'Today', b => dayOf(b) === today0], ['yday', 'Yesterday', b => dayOf(b) === daysAgo(1)], ['7', 'Last 7 days', b => dayOf(b) >= daysAgo(6)], ['30', 'Last 30 days', b => dayOf(b) >= daysAgo(29)], ['all', 'Whole season', () => true]];
+  const range = RANGES.some(r => r[0] === S.trkRange) ? S.trkRange : 'all', inRange = RANGES.find(r => r[0] === range)[2];
+  const L = done.filter(inRange).sort((a, b) => (a.settledAt || 0) - (b.settledAt || 0));
   const fmtP = v => money(v, true);
   const agg = () => ({ n: 0, w: 0, l: 0, p: 0, risk: 0, profit: 0 });
   const add = (a, b, sign = 1) => { a.n++; if (b.status === 'won') a.w++; else if (b.status === 'lost') a.l++; else a.p++; if (b.status !== 'push') a.risk += b.stake; a.profit += sign*(b.profit || 0); };
@@ -1811,12 +1816,15 @@ function betTracker(done){
   const lbl = L.map(b => new Date(b.settledAt).toLocaleDateString([], { month: 'short', day: 'numeric' }));
   const chart = pts.length >= 2 ? lineChart({ series: [{ name: 'Running profit', color: 'var(--away)', points: [[0, 0], ...pts] }], xMin: 0, xMax: pts.length, h: 200, step: true,
     xFmt: (v, l) => { const i = Math.round(v); return i === 0 ? 'Start' : l ? `Bet ${i} · ${lbl[i - 1] || ''} · ${betLabel(L[i - 1] || {}).replace(/<[^>]+>/g, '')}` : (lbl[i - 1] || ''); }, yFmt: (v, l) => l ? fmtP(v) : '$' + Math.round(v), refs: [{ y: 0, label: 'Break-even' }] }) : '<div class="note">The running profit chart appears after 2 settled bets.</div>';
+  const sumTiles = `<div class="tiles" style="margin-bottom:10px">${RANGES.map(([k, l, f]) => { const a = agg(); for (const b of done) if (f(b)) add(a, b);
+    return `<div class="tile" data-trkrange="${k}" style="cursor:pointer;${range === k ? 'outline:2px solid var(--away);' : ''}" title="Show ${l.toLowerCase()} in the tracker below"><span>${l}</span><b class="${a.profit > 0 ? 'good' : a.profit < 0 ? 'bad' : ''}">${a.n ? fmtP(a.profit) : '—'}</b><em>${a.n ? `${a.w}-${a.l}${a.p ? '-' + a.p : ''} · ${a.risk ? sgn(a.profit/a.risk*100, 1) + '% ROI' : ''}` : 'No settled bets'}</em></div>`; }).join('')}</div>`;
   const tabs = [['type', 'By bet type'], ['team', 'By team'], ['book', 'By sportsbook'], ['odds', 'By odds'], ['month', 'By month']].map(([k, l]) => `<button class="btn sm ${tab === k ? 'on' : ''}" data-trktab="${k}">${l}</button>`).join('');
-  return `<div class="section"><h3>Season tracker <small>— settled bets${range !== 'all' ? ', last ' + range + ' days' : ''}</small></h3>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="chips">${tabs}</div>
-      <select id="trkRange"><option value="all" ${range === 'all' ? 'selected' : ''}>Whole season</option><option value="30" ${range === '30' ? 'selected' : ''}>Last 30 days</option><option value="7" ${range === '7' ? 'selected' : ''}>Last 7 days</option></select>
+  const rLabel = RANGES.find(r => r[0] === range)[1];
+  return `<div class="section"><h3>Season tracker <small>— settled bets${range !== 'all' ? ' · ' + rLabel.toLowerCase() : ''}</small></h3>
+    ${sumTiles}<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><div class="chips">${tabs}</div>
+      <select id="trkRange">${RANGES.slice().reverse().map(([k, l]) => `<option value="${k}" ${range === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
 </div>
-    <div class="two"><div class="tw"><table id="trkTbl">${table}</table></div><div><h4 style="margin:0 0 6px">Running profit</h4>${chart}</div></div>
+    ${L.length ? '' : `<div class="note">No settled bets ${rLabel === 'Whole season' ? 'yet' : 'for ' + rLabel.toLowerCase()}.</div>`}<div class="two"><div class="tw"><table id="trkTbl">${table}</table></div><div><h4 style="margin:0 0 6px">Running profit</h4>${chart}</div></div>
     <div class="note">${tab === 'team' ? '“Bets in their games” counts every bet on a game the team played (totals and props count for both teams). “Backing them” / “Against them” = spreads and moneylines only (full game and 1st half), where you picked this team or their opponent. Team totals depend only on one team’s scoring, so they’re listed separately under that team and never count for the opponent. ' : ''}Click any column to sort.</div></div>`;
 }
 
@@ -1853,6 +1861,7 @@ function renderBets(){
     <h3 style="margin-top:16px">Settled (${done.length})</h3>${done.length ? `<div class="grid">${done.slice(0, 60).map(card).join('')}</div>` : '<div class="note">Nothing settled yet.</div>'}`;
   makeSortable(document.getElementById('trkTbl'), 'trk-' + (S.trkTab || 'type'));
   const tr = document.getElementById('trkRange'); if (tr) tr.onchange = e => { S.trkRange = e.target.value; renderBets(); };
+  document.querySelectorAll('[data-trkrange]').forEach(el => el.onclick = () => { S.trkRange = el.dataset.trkrange; renderBets(); });
   const uc = document.getElementById('unitConvert'); if (uc) uc.onclick = () => { const r = num(document.getElementById('unitRate').value); if (!r || r <= 0) return;
     const L2 = myBets(); for (const b of L2) if ((b.unit || 'u') === 'u'){ b.stake = +(b.stake*r).toFixed(2); if (b.profit != null) b.profit = +(b.profit*r).toFixed(2); b.unit = '$'; } saveBets(L2); renderBets(); };
   const nb = document.getElementById('betNotif'); if (nb) nb.onclick = () => Notification.requestPermission().then(() => renderBets());
