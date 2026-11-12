@@ -306,11 +306,12 @@ const LUCK_SHARE = { three: 0.80, ft: 0.90, two: 0.35 };
 // First halves score a bit below half of the game total (slower starts, fewer free throws before the bonus). Calibration assumption, checked on the Model performance page.
 const H1_PPP_FACTOR = 0.955;
 // Model settings. Defaults below; the background collector re-fits them from real results (calib.json) once enough games are logged.
-const CAL = { mktW: 0.75, h1: H1_PPP_FACTOR, src: 'defaults', data: null };
-const CAL_DEFAULTS = { mktW: 0.75, h1: H1_PPP_FACTOR, hca: 3.0, luck: { three: 0.80, ft: 0.90, two: 0.35 } };
+const CAL = { mktW: 0.75, h1: H1_PPP_FACTOR, totAdj: 0, disp: 1, src: 'defaults', data: null };
+const CAL_DEFAULTS = { mktW: 0.75, h1: H1_PPP_FACTOR, hca: 3.0, totAdj: 0, disp: 1, luck: { three: 0.80, ft: 0.90, two: 0.35 } };
 function applyCalib(c){
   if (!c) return; CAL.data = c; CAL.src = 'calibrated';
   if (c.mktW && c.mktW.use) CAL.mktW = c.mktW.value; if (c.h1 && c.h1.use) CAL.h1 = c.h1.value; if (c.hca && c.hca.use) LEAGUE.hcaPts = c.hca.value;
+  if (c.totAdj && c.totAdj.use) CAL.totAdj = c.totAdj.value; if (c.disp && c.disp.use) CAL.disp = c.disp.value;
   if (c.luck && c.luck.use){ for (const k of ['three', 'ft', 'two']) if (c.luck.value[k] != null) LUCK_SHARE[k] = c.luck.value[k]; }
 }
 const SHOT_BASE = { dunk: 0.88, layup: 0.57, tip: 0.50, hook: 0.45, jumper: 0.36, two: 0.48, three: 0.34 };
@@ -942,12 +943,17 @@ function simulate(inp, n){
   return { hs, as, ph, pa, hw: hw/n, ot: ots/n, n };
 }
 
+function isNonD1(id){ return S.conf.size >= 200 && !S.conf.has(String(id)); }
+function nonD1Rating(){ const L = (S.ratings && S.ratings.lg) || { eff: LEAGUE.eff, t: LEAGUE.pace }, n = S.ratings && S.ratings.nonD1;
+  return n ? { o: n.o, d: n.d, t: n.t, gp: n.n, nonD1: true } : { o: L.eff*0.70, d: L.eff*1.23, t: L.t*1.12, gp: 0, nonD1: true }; }
 function pregameModel(g){
   const H = S.priors.get(g.home.id), A = S.priors.get(g.away.id);
   const det = S.details.get(g.gid);
   const ln = g.pregameLine || g.odds || null;
   let ratings = null, market = null;
-  const RT = S.ratings && S.ratings.teams, RH = RT && RT[g.home.id], RA = RT && RT[g.away.id];
+  const RT = S.ratings && S.ratings.teams; let RH = RT && RT[g.home.id], RA = RT && RT[g.away.id];
+  // A non-D1 opponent (NAIA, D2, D3...) gets the shared non-D1 rating measured by the collector, not a league-average one
+  if (RT && (RH || RA) && !(RH && RA)){ const nd = nonD1Rating(); if (!RH && isNonD1(g.home.id)) RH = nd; if (!RA && isNonD1(g.away.id)) RA = nd; }
   if (RH && RA){
     // Opponent-adjusted ratings built from every D1 game this season (blended with last season early on)
     const L = S.ratings.lg, pace = RH.t*RA.t/L.t, hca = g.neutral ? 0 : LEAGUE.hcaPts;
@@ -968,6 +974,7 @@ function pregameModel(g){
   else if (market) out = { h: market.h, a: market.a, pace: H?.pace && A?.pace ? H.pace*A.pace/LEAGUE.pace : (market.h + market.a)/(2*LEAGUE.ppp), src: 'Market line only (team ratings unavailable)' };
   else if (ratings) out = { h: ratings.h, a: ratings.a, pace: ratings.pace, src: `${ratings.adjusted ? 'Opponent-adjusted' : 'Raw season'} team ratings only (no line available)${ratings.adjNote ? ' · ' + ratings.adjNote : ''}` };
   else { const hca = g.neutral ? 0 : LEAGUE.hcaPts; out = { h: LEAGUE.pace*LEAGUE.ppp + hca/2, a: LEAGUE.pace*LEAGUE.ppp - hca/2, pace: LEAGUE.pace, src: 'League-average baseline only (low confidence)', weak: true }; }
+  if (CAL.totAdj){ out.h += CAL.totAdj/2; out.a += CAL.totAdj/2; out.totAdj = CAL.totAdj; } // learned pregame total bias (collector)
   out.hPPP = out.h/out.pace; out.aPPP = out.a/out.pace; out.ratings = ratings; out.market = market;
   return out;
 }
@@ -982,6 +989,12 @@ function currentLine(g){
   return ex.find(o => o.key === pref && usable(o)) || ex.find(usable) || (usable(espn) ? espn : null) || null;
 }
 
+// Scoring rate for a stretch of game time, relative to the full-game average: 1st half x CAL.h1, 2nd half & OT x (2 - CAL.h1)
+function halfFactor(t0, t1){ if (!(t1 > t0)) return 1; const h2f = 2 - CAL.h1; const p1 = Math.max(0, Math.min(t1, 1200) - Math.max(t0, 0)), all = t1 - t0; return (p1*CAL.h1 + (all - p1)*h2f)/all; }
+// Tighten/widen simulated outcomes around their average so their spread matches real results (collector-fitted)
+function applyDisp(sim, k){ if (!k || k === 1 || !sim.hs.length) return sim; const mh = mean(sim.hs), ma = mean(sim.as); let hw = 0;
+  for (let i = 0; i < sim.hs.length; i++){ sim.hs[i] = mh + k*(sim.hs[i] - mh); sim.as[i] = ma + k*(sim.as[i] - ma); if (sim.hs[i] > sim.as[i]) hw++; }
+  sim.hw = hw/sim.hs.length; return sim; }
 function project(g){
   const det = S.details.get(g.gid); const pre = pregameModel(g);
   const el = gameElapsed(g);
@@ -997,8 +1010,9 @@ function project(g){
     res.possSource = counted ? 'counted from play-by-play' : 'estimated from box score';
     luckH = luckFor(det.totH, H, shotQ(det.plays, g.home.id)); luckA = luckFor(det.totA, A, shotQ(det.plays, g.away.id));
     const wH = possH/(possH + 45), wA = possA/(possA + 45);
-    if (possH > 3) hPPP = (1-wH)*pre.hPPP + wH*clamp((hPts - (luckH?.luck || 0))/possH, 0.6, 1.6);
-    if (possA > 3) aPPP = (1-wA)*pre.aPPP + wA*clamp((aPts - (luckA?.luck || 0))/possA, 0.6, 1.6);
+    const fSoFar = halfFactor(0, el); // first halves score less than second halves, so judge the observed rate against the right baseline
+    if (possH > 3) hPPP = (1-wH)*pre.hPPP + wH*clamp((hPts - (luckH?.luck || 0))/possH/fSoFar, 0.6, 1.6);
+    if (possA > 3) aPPP = (1-wA)*pre.aPPP + wA*clamp((aPts - (luckA?.luck || 0))/possA/fSoFar, 0.6, 1.6);
     const obsPace = ((possH + possA)/2)/(el/2400); const wP = (el/60)/((el/60) + 14);
     if (el > 90) pace = (1-wP)*pre.pace + wP*clamp(obsPace, 50, 90);
     res.obsPace = obsPace;
@@ -1018,7 +1032,8 @@ function project(g){
   const rem = g.status === 'pre' ? 2400 : g.status === 'half' ? 1200 : remainingOf(g.period || 1, g.clock ?? 0);
   const ftH = shrink(H?.ft, H?.ftaTot, LEAGUE.ft, 120), ftA = shrink(A?.ft, A?.ftaTot, LEAGUE.ft, 120);
   let poss = g.possession === g.home.id ? 'h' : g.possession === g.away.id ? 'a' : null;
-  const sim = simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP, aPPP, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims);
+  const fRem = halfFactor(el, el + Math.max(1, rem));
+  const sim = applyDisp(simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP: hPPP*fRem, aPPP: aPPP*fRem, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims), CAL.disp); res.dk = CAL.disp;
   const tot = sim.hs.map((h, i) => h + sim.as[i]).sort((x, y) => x - y); const mar = sim.hs.map((h, i) => h - sim.as[i]).sort((x, y) => x - y);
   Object.assign(res, { dist: { tot, mar, hs: sim.hs, as: sim.as }, hPPP, aPPP, pace, possH, possA, luckH, luckA, n: sim.n,
     projH: mean(sim.hs), projA: mean(sim.as), projT: mean(tot), projM: mean(mar), pHome: sim.hw, pOT: sim.ot,
@@ -1028,7 +1043,7 @@ function project(g){
   // First half: simulate only to halftime (no end-game fouling, no overtime)
   const h1L = h1Line(g);
   if (g.status === 'pre' || (g.status === 'in' && g.period === 1)){
-    const s1 = simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims));
+    const s1 = applyDisp(simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims)), CAL.disp);
     const t1 = s1.hs.map((h, i) => h + s1.as[i]).sort((x, y) => x - y), m1 = s1.hs.map((h, i) => h - s1.as[i]).sort((x, y) => x - y);
     res.h1 = { dist: { tot: t1, mar: m1, hs: s1.hs, as: s1.as }, projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L };
     if (h1L){ if (h1L.total != null){ res.h1.pOver = t1.filter(v => v > h1L.total).length/t1.length; res.h1.pPushT = t1.filter(v => v === h1L.total).length/t1.length; }
@@ -1509,7 +1524,7 @@ function card(g){
     <div class="kv">
       <div><span>Spread${ln ? ' · ' + esc(shortBook(ln.book)) : ''}</span><b>${spreadText(g, ln)}</b></div>
       <div><span>O/U</span><b>${ln && ln.total != null ? ln.total : NA}</b></div>
-      <div title="Model estimate"><span>${g.status === 'post' ? 'Pregame proj' : 'Proj total'}</span><b class="model">${projT != null ? projT.toFixed(1) : '—'}</b>${disc != null ? ` <small class="${Math.abs(disc) >= 4 ? 'warn' : ''}">(${sgn(disc)})</small>` : ''}</div>
+      <div title="Model estimate"><span>${g.status === 'post' ? 'Pregame proj' : 'Proj total'}</span><b class="model">${projT != null ? projT.toFixed(1) : '—'}</b>${disc != null ? ` <small class="${Math.abs(disc) >= 4 ? 'warn' : ''}" ${g.status === 'pre' && Math.abs(disc) < 4 ? 'style="opacity:.55" title="Model total minus the line. Pregame gaps under 4 points have been noise so far — not a betting edge."' : 'title="Model total minus the line"'}>(${sgn(disc)})</small>` : ''}</div>
       <div><span>Pace /40</span><b>${pace != null ? pace.toFixed(1) : (p && p.pre && !p.pre.weak ? `<span class="model" title="Pregame expected pace">${p.pre.pace.toFixed(1)}</span>` : '—')}</b></div>
       <div title="Model estimate"><span>Win% ${esc(g.home.abbr)}</span><b class="model">${p && p.pHome != null ? pct(p.pHome, 0) : '—'}</b></div>
       <div title="Adjusted Luck Rating: which team's result is more inflated by shooting luck (model estimate)"><span>Luck edge</span><b>${luckTxt}</b></div>
@@ -2934,7 +2949,9 @@ async function renderPerf(){
     const arr = byG[g.gid].sort((a, b) => a.ts - b.ts); const c = {};
     for (const [name, el] of cps){ const s = el === 0 ? arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null) : pickAt(arr.filter(x => x.status !== 'pre'), el); if (s && !(el > 0 && s.el < el - 240)) c[name] = s; }
     fin.set(g.gid, Object.assign({ src: 'browser', cps: c, n: arr.length }, g)); }
-  const finals = [...fin.values()];
+  const allFinals = [...fin.values()], scope = S.perfScope || 'd1';
+  const nNon = allFinals.filter(g => g.d1 === false).length;
+  const finals = allFinals.filter(g => scope === 'all' || (scope === 'd1' ? g.d1 !== false : g.d1 === false));
   const rows = []; // per game per checkpoint
   for (const g of finals){ const T = g.h + g.a, M = g.h - g.a;
     for (const [name] of cps){ const s = g.cps && g.cps[name]; if (!s || s.projT == null) continue;
@@ -2981,10 +2998,11 @@ async function renderPerf(){
     return `<div><h4 style="margin:0 0 6px">${label}</h4><table><thead><tr><th>Model lean</th><th>Games</th><th title="Average points the line moved toward the model's side between the first pregame number and the close">Avg CLV</th><th title="Share of games where the line moved toward the model">Beat close</th><th title="Record of the model's side against the line it was picked at">Record</th></tr></thead><tbody>
       ${bucket.map(([n, f]) => { const a = arr.filter(f); return a.length ? `<tr><td>${n}</td><td class="num">${a.length}</td><td class="num"><b class="${mean(a.map(x => x.clv)) > 0 ? 'good' : 'bad'}">${sgn(mean(a.map(x => x.clv)), 2)}</b></td><td class="num">${pct(a.filter(x => x.clv > 0).length/a.length, 0)}</td><td class="num">${rec(a)}</td></tr>` : ''; }).join('')}</tbody></table></div>`; };
   const clvHtml = `<div class="section"><h3>Closing line value <small>— did the line move toward the model's side before tip-off?</small></h3><div class="two">${clvBlock('sp', 'Spreads')}${clvBlock('to', 'Totals')}</div>
-    <div class="note">The model's "lean" is its side at the first pregame line the collector saw; CLV compares that number with the closing line from the same book. Consistently positive CLV is the best long-run sign of a real edge — records alone take hundreds of games to mean much. This is tracking, not betting advice.</div></div>`;
+    <div class="note">The model's "lean" is its side at the first pregame line the collector saw; CLV compares that number with the closing line from the same book. So far the model's pregame leans have <b>not</b> beaten the close — treat gaps under 4 points as noise. Consistently positive CLV is the best long-run sign of a real edge — records alone take hundreds of games to mean much. This is tracking, not betting advice.</div></div>`;
   const h1Rows = finals.filter(g => g.h1H != null && g.h1A != null && g.cps && g.cps.Pregame && g.cps.Pregame.projH1T != null).map(g => ({ err: g.cps.Pregame.projH1T - (g.h1H + g.h1A), lineErr: g.cps.Pregame.lineH1Total != null ? g.cps.Pregame.lineH1Total - (g.h1H + g.h1A) : null, errM: g.cps.Pregame.projH1M - (g.h1H - g.h1A) }));
   const h1Sec = `<div class="section"><h3>First-half projections <small>(pregame)</small></h3>${h1Rows.length ? `<table><tbody><tr><td>Games</td><td class="num">${h1Rows.length}</td></tr><tr><td>Model 1H total MAE</td><td class="num">${f1(mae(h1Rows.map(r => r.err)))}</td></tr><tr><td>Book 1H total MAE</td><td class="num">${f1(mae(h1Rows.filter(r => r.lineErr != null).map(r => r.lineErr)))}</td></tr><tr><td>Model 1H margin MAE</td><td class="num">${f1(mae(h1Rows.map(r => r.errM)))}</td></tr><tr><td>1H total bias</td><td class="num">${sgn(mean(h1Rows.map(r => r.err)))}</td></tr></tbody></table>` : '<div class="note">Not enough data yet (comes from the background collector).</div>'}</div>`;
-  m.innerHTML = `<div class="notice">${server ? `<b>${nSrv}</b> games from the background collector (every game, saved about every 5 minutes)${finals.length - nSrv ? ` + <b>${finals.length - nSrv}</b> seen live in this browser` : ''}. ${S.srvStatus ? `Collector last ran ${ago(Date.parse(S.srvStatus.lastRun))}.` : ''}` : `Background collector history not found${SRV.base ? '' : ' (open the dashboard from your GitHub Pages address to use it)'} — showing only games this browser saw live.`}</div>
+  m.innerHTML = `<div style="display:flex;gap:4px;margin-bottom:8px">${[['d1', 'D1 vs D1'], ['non', `vs non-D1 (${nNon})`], ['all', 'All games']].map(([k, n]) => `<button class="btn sm ${scope === k ? 'on' : ''}" data-pscope="${k}">${n}</button>`).join('')}</div>
+  ${scope === 'd1' && nNon ? `<div class="note" style="margin-bottom:8px">${nNon} games against non-D1 schools are left out here — they have no betting line and lopsided scores that would swamp the accuracy numbers.</div>` : ''}<div class="notice">${server ? `<b>${nSrv}</b> games from the background collector (every game, saved about every 5 minutes)${finals.length - nSrv ? ` + <b>${finals.length - nSrv}</b> seen live in this browser` : ''}. ${S.srvStatus ? `Collector last ran ${ago(Date.parse(S.srvStatus.lastRun))}.` : ''}` : `Background collector history not found${SRV.base ? '' : ' (open the dashboard from your GitHub Pages address to use it)'} — showing only games this browser saw live.`}</div>
   <div class="section"><h3>Accuracy by game situation <small>— ${finals.length} completed games with saved projections</small></h3>${rows.length ? `<div class="tw"><table><thead><tr><th>Checkpoint</th><th>Games</th><th>Total MAE</th><th>Book total MAE</th><th>Naive pace MAE</th><th>Margin MAE</th><th>Possessions MAE</th><th>Win-prob Brier</th><th>Total bias</th></tr></thead><tbody>${tbl}</tbody></table></div>
     <div class="note">MAE = mean absolute error in points (lower is better). “Book total” is the sportsbook total that was posted at that moment. “Naive pace” is the simple current-pace extrapolation, a baseline that the luck-adjusted model should beat. Brier: 0.25 = coin flip, lower is better.</div>` : '<div class="note">No completed games with saved projections yet. Leave the scoreboard open during games and results will appear here after they go final.</div>'}</div>
   <div class="two"><div class="section"><h3>Win probability calibration</h3>${calChart || '<div class="note">Not enough data yet.</div>'}</div>
@@ -2993,6 +3011,7 @@ async function renderPerf(){
   ${calHtml}${clvHtml}${spotHtml}${h1Sec}
   <div class="section"><h3>By conference <small>(halftime projections, home team's conference)</small></h3>${confRows ? `<table><thead><tr><th>Conference</th><th>Games</th><th>Total MAE</th><th>Margin MAE</th><th>Brier</th></tr></thead><tbody>${confRows}</tbody></table>` : '<div class="note">Not enough data yet.</div>'}</div>
   <div class="section"><h3>Review a past game <small>— click to open the scoreboard on that date with the game's saved projections</small></h3>${list ? `<div class="tw"><table><thead><tr><th>Date</th><th>Game</th><th>Conf</th><th>Snapshots</th><th>Pregame total</th></tr></thead><tbody>${list}</tbody></table></div>` : '<div class="note">Nothing stored yet.</div>'}</div>`;
+  m.querySelectorAll('[data-pscope]').forEach(b => b.addEventListener('click', () => { S.perfScope = b.dataset.pscope; renderPerf(); }));
   renderStatus();
 }
 
