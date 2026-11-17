@@ -1547,7 +1547,7 @@ function d1Game(g){ return !S.hideNonD1 || (isD1(g.home.id) && isD1(g.away.id));
 function visibleGames(){ return [...S.games.values()].filter(d1Game); }
 function filtered(){
   const f = S.filter; let arr = visibleGames();
-  if (f.st !== 'all') arr = arr.filter(g => f.st === 'pre' ? (g.status === 'pre' || g.status === 'other') : g.status === f.st);
+  if (f.st !== 'all') arr = arr.filter(g => f.st === 'pre' ? (g.status === 'pre' || g.status === 'other') : f.st === 'in' ? (g.status === 'in' || g.status === 'half') : g.status === f.st); // Live includes games at halftime
   if (f.conf) arr = arr.filter(g => confOf(g.home) === f.conf || confOf(g.away) === f.conf);
   if (f.ranked) arr = arr.filter(g => g.home.rank || g.away.rank);
   if (f.q){ const q = f.q.toLowerCase(); arr = arr.filter(g => (g.home.name + ' ' + g.away.name + ' ' + g.home.abbr + ' ' + g.away.abbr).toLowerCase().includes(q)); }
