@@ -387,6 +387,7 @@ jobs:
                 pHome: p.pHome, pOver: p.pOver ?? null, pCoverH: p.pCoverH ?? null, lineTotal: p.line?.total ?? null, lineSpread: p.line?.homeSpread ?? null, book: p.line?.book ?? null,
                 projPoss: p.projPossH != null ? (p.projPossH + p.projPossA) / 2 : null, naiveT: p.naiveT, luckH: p.luckH?.luck ?? null, luckA: p.luckA?.luck ?? null, src: 'collector',
                 ...(g.status === 'pre' && p.pre ? { ta: p.pre.totAdj || 0, dk: p.dk || 1 } : {}),
+                ...(p.sdRaw ? { sr: [+p.sdRaw.m.toFixed(2), +p.sdRaw.t.toFixed(2)] } : {}), ...(p.h1 && p.h1.sdRaw ? { s1: [+p.h1.sdRaw.m.toFixed(2), +p.h1.sdRaw.t.toFixed(2)] } : {}),
                 ...(g.status === 'pre' && p.pre && p.pre.market && p.pre.ratings ? { preM: [+p.pre.market.h.toFixed(2), +p.pre.market.a.toFixed(2)], preR: [+p.pre.ratings.h.toFixed(2), +p.pre.ratings.a.toFixed(2)] } : {}),
                 ...(p.h1 && !p.h1.final ? { projH1T: p.h1.projT, projH1M: p.h1.projM, lineH1Total: p.h1.line?.total ?? null, lineH1Spread: p.h1.line?.homeSpread ?? null } : {}) });
               status.snaps++;
@@ -444,9 +445,33 @@ jobs:
             const inv = p => { let lo = -6, hi = 6; for (let i = 0; i < 60; i++){ const m = (lo + hi)/2; (0.5*(1 + erf(m/Math.SQRT2)) < p ? lo = m : hi = m); } return (lo + hi)/2; };
             const sds = [], res2 = [];
             for (const r of pl){ const c = r.cps.Pregame; if (c.pHome == null || c.pHome < 0.03 || c.pHome > 0.97 || Math.abs(c.projM) < 1) continue; const z = inv(c.pHome); if (Math.abs(z) < 0.08) continue;
-              const sd = c.projM/z/(c.dk || 1); if (sd > 4 && sd < 30) sds.push(sd); res2.push((r.h - r.a) - c.projM); }
+              const sd = c.projM/z/((c.dk && typeof c.dk === 'object' ? c.dk.m : c.dk) || 1); if (sd > 4 && sd < 30) sds.push(sd); res2.push((r.h - r.a) - c.projM); }
             if (sds.length >= 30){ sds.sort((a, b) => a - b); const simSd = sds[sds.length >> 1], realSd = Math.sqrt(mean(res2.map(v => v*v)));
               C.disp = { value: +Math.max(0.7, Math.min(1.15, realSd/simSd)).toFixed(3), simSd: +simSd.toFixed(2), realSd: +realSd.toFixed(2), n: sds.length, use: sds.length >= 150, def: 1 }; }
+            // Spread of outcomes, margins and totals separately, from the raw simulated spread saved with each projection (sr / s1)
+            const med = a => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; }, rms = a => Math.sqrt(mean(a.map(v => v*v))), sdv = a => { const u = mean(a); return Math.sqrt(mean(a.map(v => (v - u)**2))); };
+            const kClamp = v => +Math.max(0.6, Math.min(1.5, v)).toFixed(3);
+            const fitK = (rows, cp, getAct) => { const R2 = rows.filter(r => r.cps[cp] && r.cps[cp].sr); if (R2.length < 20) return null;
+              const kM = rms(R2.map(r => getAct(r).m - r.cps[cp].projM))/med(R2.map(r => r.cps[cp].sr[0])), kT = sdv(R2.map(r => getAct(r).t - r.cps[cp].projT))/med(R2.map(r => r.cps[cp].sr[1]));
+              return { kM: kClamp(kM), kT: kClamp(kT), n: R2.length }; };
+            const d1rows = perf.filter(r => r.d1 !== false && r.cps && r.cps.Pregame && r.cps.Pregame.lineSpread != null);
+            const fin = r => ({ m: r.h - r.a, t: r.h + r.a });
+            const kp = fitK(d1rows, 'Pregame', fin);
+            if (kp && kp.n >= 100){ C.disp = Object.assign(C.disp || {}, { value: kp.kM, kT: kp.kT, n: kp.n, use: kp.n >= 150, method: 'raw spread' }); }
+            else if (C.disp) C.disp.kT = 1.2; // until enough games carry the raw spread, keep the measured default for totals
+            const kh = fitK(d1rows, 'Halftime', fin);
+            if (kh) C.dispH = { value: { m: kh.kM, t: kh.kT }, kM: kh.kM, kT: kh.kT, n: kh.n, use: kh.n >= 60, def: { m: 0.88, t: 0.98 } };
+            const byG = new Map(LOG.games.map(x => [x.gid, x]));
+            const h1rows = d1rows.filter(r => { const x = byG.get(r.gid); const c = r.cps.Pregame; return x && x.h1 && c.s1 && c.projH1T != null && c.projH1M != null; });
+            if (h1rows.length >= 20){ const act = r => byG.get(r.gid).h1, c = r => r.cps.Pregame;
+              const kM = rms(h1rows.map(r => (act(r)[0] - act(r)[1]) - c(r).projH1M))/med(h1rows.map(r => c(r).s1[0])), kT = sdv(h1rows.map(r => (act(r)[0] + act(r)[1]) - c(r).projH1T))/med(h1rows.map(r => c(r).s1[1]));
+              C.dispH1 = { value: { m: kClamp(kM), t: kClamp(kT) }, kM: kClamp(kM), kT: kClamp(kT), n: h1rows.length, use: h1rows.length >= 150, def: { m: 1.03, t: 1.04 } }; }
+            // Live: how much the first half's scoring should move the second-half projection (grid search, 2nd-half margin and total)
+            const sh2 = 1 - ((C.h1 && C.h1.share) || 0.475);
+            const LG = d1rows.map(r => { const x = byG.get(r.gid); return x && x.h1 && x.h2 && !x.ot ? { pm: r.cps.Pregame.projM, pt: r.cps.Pregame.projT, h1m: x.h1[0] - x.h1[1], h1t: x.h1[0] + x.h1[1], h2m: x.h2[0] - x.h2[1], h2t: x.h2[0] + x.h2[1] } : null; }).filter(Boolean);
+            if (LG.length >= 40){ const best = fn => { let b = null; for (let w = 0; w <= 0.6001; w += 0.02){ const e = mean(LG.map(fn(w))); if (!b || e < b.e) b = { w: +w.toFixed(2), e }; } return b.w; };
+              const wM = best(w => g => Math.abs(g.h2m - ((1 - w)*g.pm*0.5 + w*g.h1m))), wT = best(w => g => Math.abs(g.h2t - ((1 - w)*g.pt*sh2 + w*g.h1t*sh2/(1 - sh2))));
+              C.live = { value: { m: wM, t: wT }, wM, wT, n: LG.length, use: LG.length >= 200, def: { m: 0.03, t: 0.22 } }; }
             return C;
           }
           function erf(x){ const t = 1/(1 + 0.3275911*Math.abs(x)), y = 1 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t*Math.exp(-x*x); return x >= 0 ? y : -y; }
@@ -478,7 +503,7 @@ jobs:
               if (el === 0) s = arr.filter(x => x.status === 'pre').pop() || (arr[0].el < 60 ? arr[0] : null);
               else { for (const x of arr) if (x.status !== 'pre' && x.el <= el + 1 && (!s || x.el >= s.el)) s = x; if (s && s.el < el - 240) s = null; }
               if (s) cps[name] = { el: s.el, h: s.h, a: s.a, projT: s.projT, projM: s.projM, pHome: s.pHome, naiveT: s.naiveT, lineTotal: s.lineTotal, lineSpread: s.lineSpread, projPoss: s.projPoss,
-                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}), ...(s.preM ? { preM: s.preM, preR: s.preR } : {}), ...(s.ta != null ? { ta: s.ta, dk: s.dk } : {}) };
+                ...(s.projH1T != null ? { projH1T: s.projH1T, projH1M: s.projH1M, lineH1Total: s.lineH1Total, lineH1Spread: s.lineH1Spread } : {}), ...(s.preM ? { preM: s.preM, preR: s.preR } : {}), ...(s.ta != null ? { ta: s.ta, dk: s.dk } : {}), ...(s.sr ? { sr: s.sr } : {}), ...(s.s1 ? { s1: s.s1 } : {}) };
             }
             const D1s = new Set(S.conf.keys());
             perf.push({ gid: meta.gid, d1: g && D1s.size ? D1s.has(String(g.home.id)) && D1s.has(String(g.away.id)) : undefined, day: meta.day, home: meta.home, away: meta.away, conf: meta.conf, h: meta.h, a: meta.a, finalPoss: meta.finalPoss, ot: !!meta.ot, pregameLine: meta.pregameLine || null, cps, n: arr.length,
