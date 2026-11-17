@@ -306,12 +306,18 @@ const LUCK_SHARE = { three: 0.80, ft: 0.90, two: 0.35 };
 // First halves score a bit below half of the game total (slower starts, fewer free throws before the bonus). Calibration assumption, checked on the Model performance page.
 const H1_PPP_FACTOR = 0.955;
 // Model settings. Defaults below; the background collector re-fits them from real results (calib.json) once enough games are logged.
-const CAL = { mktW: 0.75, h1: H1_PPP_FACTOR, totAdj: 0, disp: 1, src: 'defaults', data: null };
-const CAL_DEFAULTS = { mktW: 0.75, h1: H1_PPP_FACTOR, hca: 3.0, totAdj: 0, disp: 1, luck: { three: 0.80, ft: 0.90, two: 0.35 } };
+// disp*: how much to tighten (<1) or widen (>1) simulated outcomes so their spread matches real results — margins and totals separately,
+//   pregame (…P) and from halftime on (…H), blended by game time. wHalf*: weight on the observed scoring rate once a half has been played.
+//   Defaults measured on 460+ D1 games through Nov 16; the collector re-fits them as games come in.
+const CAL = { mktW: 0.75, h1: H1_PPP_FACTOR, totAdj: 0, dispMP: 0.85, dispTP: 1.2, dispMH: 0.88, dispTH: 0.98, dispH1M: 1.03, dispH1T: 1.04, wHalfM: 0.03, wHalfT: 0.22, src: 'defaults', data: null };
+const CAL_DEFAULTS = { mktW: 0.75, h1: H1_PPP_FACTOR, hca: 3.0, totAdj: 0, dispMP: 0.85, dispTP: 1.2, dispMH: 0.88, dispTH: 0.98, dispH1M: 1.03, dispH1T: 1.04, wHalfM: 0.03, wHalfT: 0.22, luck: { three: 0.80, ft: 0.90, two: 0.35 } };
 function applyCalib(c){
   if (!c) return; CAL.data = c; CAL.src = 'calibrated';
   if (c.mktW && c.mktW.use) CAL.mktW = c.mktW.value; if (c.h1 && c.h1.use) CAL.h1 = c.h1.value; if (c.hca && c.hca.use) LEAGUE.hcaPts = c.hca.value;
-  if (c.totAdj && c.totAdj.use) CAL.totAdj = c.totAdj.value; if (c.disp && c.disp.use) CAL.disp = c.disp.value;
+  if (c.totAdj && c.totAdj.use) CAL.totAdj = c.totAdj.value; if (c.disp && c.disp.use){ CAL.dispMP = c.disp.value; if (c.disp.kT != null) CAL.dispTP = c.disp.kT; }
+  if (c.dispH && c.dispH.use){ CAL.dispMH = c.dispH.kM; CAL.dispTH = c.dispH.kT; }
+  if (c.dispH1 && c.dispH1.use){ CAL.dispH1M = c.dispH1.kM; CAL.dispH1T = c.dispH1.kT; }
+  if (c.live && c.live.use){ CAL.wHalfM = Math.max(0.02, c.live.wM); CAL.wHalfT = Math.max(0.02, c.live.wT); }
   if (c.luck && c.luck.use){ for (const k of ['three', 'ft', 'two']) if (c.luck.value[k] != null) LUCK_SHARE[k] = c.luck.value[k]; }
 }
 const SHOT_BASE = { dunk: 0.88, layup: 0.57, tip: 0.50, hook: 0.45, jumper: 0.36, two: 0.48, three: 0.34 };
@@ -992,9 +998,15 @@ function currentLine(g){
 // Scoring rate for a stretch of game time, relative to the full-game average: 1st half x CAL.h1, 2nd half & OT x (2 - CAL.h1)
 function halfFactor(t0, t1){ if (!(t1 > t0)) return 1; const h2f = 2 - CAL.h1; const p1 = Math.max(0, Math.min(t1, 1200) - Math.max(t0, 0)), all = t1 - t0; return (p1*CAL.h1 + (all - p1)*h2f)/all; }
 // Tighten/widen simulated outcomes around their average so their spread matches real results (collector-fitted)
-function applyDisp(sim, k){ if (!k || k === 1 || !sim.hs.length) return sim; const mh = mean(sim.hs), ma = mean(sim.as); let hw = 0;
-  for (let i = 0; i < sim.hs.length; i++){ sim.hs[i] = mh + k*(sim.hs[i] - mh); sim.as[i] = ma + k*(sim.as[i] - ma); if (sim.hs[i] > sim.as[i]) hw++; }
-  sim.hw = hw/sim.hs.length; return sim; }
+function applyDisp(sim, kM, kT){ if (!sim.hs.length) return sim; const n = sim.hs.length;
+  const S0 = sim.hs.map((h, i) => h + sim.as[i]), D0 = sim.hs.map((h, i) => h - sim.as[i]), mS = mean(S0), mD = mean(D0);
+  const sd = a => { const u = mean(a); return Math.sqrt(mean(a.map(x => (x - u)**2))); };
+  sim.sdRaw = { m: sd(D0), t: sd(S0) }; // spread before adjusting (the collector uses this to re-fit kM/kT)
+  if ((kM == null || kM === 1) && (kT == null || kT === 1)) return sim;
+  let hw = 0; for (let i = 0; i < n; i++){ const t = mS + (kT ?? 1)*(S0[i] - mS), d = mD + (kM ?? 1)*(D0[i] - mD); sim.hs[i] = (t + d)/2; sim.as[i] = (t - d)/2; if (d > 0) hw++; }
+  sim.hw = hw/n; return sim; }
+// spread factors for this point in the game: pregame values blend into the halftime values over the first half
+function dispNow(el){ const f = Math.max(0, Math.min(1, (el || 0)/1200)); return { m: CAL.dispMP + (CAL.dispMH - CAL.dispMP)*f, t: CAL.dispTP + (CAL.dispTH - CAL.dispTP)*f }; }
 function project(g){
   const det = S.details.get(g.gid); const pre = pregameModel(g);
   const el = gameElapsed(g);
@@ -1009,10 +1021,16 @@ function project(g){
     possH = counted ? counted.h : eH ?? 0; possA = counted ? counted.a : eA ?? 0;
     res.possSource = counted ? 'counted from play-by-play' : 'estimated from box score';
     luckH = luckFor(det.totH, H, shotQ(det.plays, g.home.id)); luckA = luckFor(det.totA, A, shotQ(det.plays, g.away.id));
-    const wH = possH/(possH + 45), wA = possA/(possA + 45);
     const fSoFar = halfFactor(0, el); // first halves score less than second halves, so judge the observed rate against the right baseline
-    if (possH > 3) hPPP = (1-wH)*pre.hPPP + wH*clamp((hPts - (luckH?.luck || 0))/possH/fSoFar, 0.6, 1.6);
-    if (possA > 3) aPPP = (1-wA)*pre.aPPP + wA*clamp((aPts - (luckA?.luck || 0))/possA/fSoFar, 0.6, 1.6);
+    if (possH > 3 && possA > 3){
+      // How much the scoring so far should change the rest of the game. Tested on 460+ games: the first-half MARGIN adds almost
+      // nothing beyond the pregame number for the second half, while the first-half SCORING LEVEL helps totals a little.
+      const oH = clamp((hPts - (luckH?.luck || 0))/possH/fSoFar, 0.6, 1.6), oA = clamp((aPts - (luckA?.luck || 0))/possA/fSoFar, 0.6, 1.6);
+      const pp = (possH + possA)/2, halfPoss = 36, K = w => halfPoss*(1 - w)/w;
+      const wM = pp/(pp + K(CAL.wHalfM)), wT = pp/(pp + K(CAL.wHalfT));
+      const avg = (pre.hPPP + pre.aPPP)/2 + wT*((oH + oA)/2 - (pre.hPPP + pre.aPPP)/2), diff = (pre.hPPP - pre.aPPP) + wM*((oH - oA) - (pre.hPPP - pre.aPPP));
+      hPPP = avg + diff/2; aPPP = avg - diff/2; res.liveW = { m: wM, t: wT };
+    }
     const obsPace = ((possH + possA)/2)/(el/2400); const wP = (el/60)/((el/60) + 14);
     if (el > 90) pace = (1-wP)*pre.pace + wP*clamp(obsPace, 50, 90);
     res.obsPace = obsPace;
@@ -1032,8 +1050,8 @@ function project(g){
   const rem = g.status === 'pre' ? 2400 : g.status === 'half' ? 1200 : remainingOf(g.period || 1, g.clock ?? 0);
   const ftH = shrink(H?.ft, H?.ftaTot, LEAGUE.ft, 120), ftA = shrink(A?.ft, A?.ftaTot, LEAGUE.ft, 120);
   let poss = g.possession === g.home.id ? 'h' : g.possession === g.away.id ? 'a' : null;
-  const fRem = halfFactor(el, el + Math.max(1, rem));
-  const sim = applyDisp(simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP: hPPP*fRem, aPPP: aPPP*fRem, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims), CAL.disp); res.dk = CAL.disp;
+  const fRem = halfFactor(el, el + Math.max(1, rem)), DK = dispNow(el);
+  const sim = applyDisp(simulate({ h: hPts, a: aPts, rem: Math.max(0, rem), pace, hPPP: hPPP*fRem, aPPP: aPPP*fRem, ftH, ftA, poss, inOT: (g.period || 0) > 2, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: +g.gid % 100000 }, g.status === 'pre' && S.open !== g.gid ? Math.min(400, S.settings.sims) : S.settings.sims), DK.m, DK.t); res.dk = DK; res.sdRaw = sim.sdRaw;
   const tot = sim.hs.map((h, i) => h + sim.as[i]).sort((x, y) => x - y); const mar = sim.hs.map((h, i) => h - sim.as[i]).sort((x, y) => x - y);
   Object.assign(res, { dist: { tot, mar, hs: sim.hs, as: sim.as }, hPPP, aPPP, pace, possH, possA, luckH, luckA, n: sim.n,
     projH: mean(sim.hs), projA: mean(sim.as), projT: mean(tot), projM: mean(mar), pHome: sim.hw, pOT: sim.ot,
@@ -1043,9 +1061,9 @@ function project(g){
   // First half: simulate only to halftime (no end-game fouling, no overtime)
   const h1L = h1Line(g);
   if (g.status === 'pre' || (g.status === 'in' && g.period === 1)){
-    const s1 = applyDisp(simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims)), CAL.disp);
+    const s1 = applyDisp(simulate({ h: g.status === 'pre' ? 0 : hPts, a: g.status === 'pre' ? 0 : aPts, rem: g.status === 'pre' ? 1200 : Math.max(0, g.clock ?? 0), pace, hPPP: hPPP*CAL.h1, aPPP: aPPP*CAL.h1, ftH, ftA, poss, noEnd: true, bonusH, bonusA, bonusWindow: Math.max(0, bonusWindow), seed: (+g.gid % 100000) + 7 }, Math.min(600, S.settings.sims)), CAL.dispH1M, CAL.dispH1T);
     const t1 = s1.hs.map((h, i) => h + s1.as[i]).sort((x, y) => x - y), m1 = s1.hs.map((h, i) => h - s1.as[i]).sort((x, y) => x - y);
-    res.h1 = { dist: { tot: t1, mar: m1, hs: s1.hs, as: s1.as }, projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L };
+    res.h1 = { dist: { tot: t1, mar: m1, hs: s1.hs, as: s1.as }, projH: mean(s1.hs), projA: mean(s1.as), projT: mean(t1), projM: mean(m1), pHomeLead: m1.filter(v => v > 0).length/m1.length, t10: quant(t1, 0.1), t90: quant(t1, 0.9), line: h1L, sdRaw: s1.sdRaw };
     if (h1L){ if (h1L.total != null){ res.h1.pOver = t1.filter(v => v > h1L.total).length/t1.length; res.h1.pPushT = t1.filter(v => v === h1L.total).length/t1.length; }
       if (h1L.homeSpread != null){ res.h1.pCoverH = m1.filter(v => v + h1L.homeSpread > 0).length/m1.length; res.h1.pPush = m1.filter(v => v + h1L.homeSpread === 0).length/m1.length; } }
   } else if (g.home.lines.length >= 1 && g.away.lines.length >= 1){
@@ -1832,8 +1850,8 @@ function renderBets(){
   const m = document.getElementById('main'); const list = myBets();
   const open = list.filter(b => b.status === 'open').sort((a, b) => Date.parse(a.date) - Date.parse(b.date)), done = list.filter(b => b.status !== 'open').sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0));
   const card = b => { const st = betState(b), g = st.g;
-    const cls = b.status !== 'open' ? b.status : !st.known || !st.started ? 'pend' : st.v > 0 ? 'win' : st.v < 0 ? 'lose' : 'push';
-    const chip = b.status !== 'open' ? { won: 'WON', lost: 'LOST', push: 'PUSH' }[b.status] : !st.known ? 'LOADING' : !st.started ? 'PENDING' : st.v > 0 ? 'WINNING' : st.v < 0 ? 'LOSING' : 'PUSH NOW';
+    const cls = b.status !== 'open' ? b.status : 'pend';
+    const chip = b.status !== 'open' ? { won: 'WON', lost: 'LOST', push: 'PUSH' }[b.status] : !st.known ? 'LOADING' : !st.started ? 'PENDING' : st.g && st.g.status === 'post' ? 'FINAL' : 'LIVE';
     const clock = g ? (g.status === 'post' ? (g.period > 2 ? 'Final/OT' : 'Final') : g.status === 'half' ? 'Halftime' : g.status === 'in' ? `${periodName(g.period)} ${g.displayClock}` : '') : '';
     return `<div class="betcard ${cls}"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span class="chip ${cls}">${chip}</span><span class="note" style="margin:0">${esc(BET_TYPES[b.type])}${b.book ? ' · ' + esc(b.book) : ''}</span></div>
       <div style="font-size:17px;font-weight:800;margin:6px 0 2px">${betLabel(b)} <small class="na" style="font-style:normal">${b.odds > 0 ? '+' : ''}${b.odds}</small></div>
@@ -1848,7 +1866,7 @@ function renderBets(){
   const unitBets = list.filter(b => (b.unit || 'u') === 'u');
   const live = open.map(betState).filter(x => x.known && x.started);
   m.innerHTML = `<div class="section"><h3>My Bets <small>— saved in this browser · checks every ${S.settings.refresh}s while the dashboard is open</small></h3><div class="tiles">
-      <div class="tile"><span>Open bets</span><b>${open.length}</b><em>${live.filter(x => x.v > 0).length} winning · ${live.filter(x => x.v < 0).length} losing right now</em></div>
+      <div class="tile"><span>Open bets</span><b>${open.length}</b><em>${live.length} in progress · ${open.length - live.length} not started</em></div>
       <div class="tile"><span>Record</span><b>${w}-${l}${pu ? '-' + pu : ''}</b><em>${w + l ? Math.round(w/(w + l)*100) + '% wins' : 'no settled bets yet'}</em></div>
       <div class="tile"><span>Profit</span><b class="${sumD > 0 ? 'good' : sumD < 0 ? 'bad' : ''}">${money(sumD, true)}</b><em>${riskD ? `on ${money(riskD)} risked · ROI ${sgn(sumD/riskD*100)}%` : ''}</em></div>
       <div class="tile"><span>Open action</span><b>${money(atRisk)}</b><em>${open.length ? `to win ${money(toWin)}` : 'nothing open'}</em></div>
@@ -2983,7 +3001,7 @@ async function renderPerf(){
   const nSrv = finals.filter(g => g.src === 'collector').length;
   await syncServer();
   // ---- self-calibration panel
-  const CD = CAL.data, need = { mktW: 150, h1: 300, hca: 250, luck: 600 };
+  const CD = CAL.data, need = { mktW: 150, h1: 300, hca: 250, luck: 600, totAdj: 150, disp: 150, dispH: 60, dispH1: 150, live: 200 };
   const calRow = (label, key, fmt, defV, desc) => { const c = CD && CD[key]; return `<tr><td>${label}<div class="note" style="margin:0">${desc}</div></td><td class="num">${fmt(defV)}</td><td class="num">${c ? fmt(c.value) : '—'}</td><td class="num">${c ? c.n : 0}</td><td>${c && c.use ? '<b class="good">In use</b>' : `<span class="na" style="font-style:normal">Collecting (needs ${need[key]})</span>`}</td></tr>`; };
   const lf = v => v ? `3P ${Math.round(v.three*100)}% · FT ${Math.round(v.ft*100)}% · 2P ${Math.round(v.two*100)}%` : '—';
   const calHtml = `<div class="section"><h3>Self-calibration <small>— model settings re-fit from logged results ${CD ? '· updated ' + ago(CD.updated) + ' from ' + CD.games + ' games' : ''}</small></h3>
@@ -2992,6 +3010,11 @@ async function renderPerf(){
     ${calRow('First-half scoring factor', 'h1', v => v == null ? '—' : v.toFixed(3), CAL_DEFAULTS.h1, 'First-half points ÷ half of regulation points.')}
     ${calRow('Home-court advantage', 'hca', v => v == null ? '—' : v.toFixed(2) + ' pts', CAL_DEFAULTS.hca, 'Average home margin beyond what the ratings expect on a neutral floor.')}
     ${calRow('Luck share of shooting swings', 'luck', lf, CAL_DEFAULTS.luck, 'Share of game-to-game shooting variation that is pure chance (used by the luck model).')}
+    ${calRow('Pregame total adjustment', 'totAdj', v => v == null ? '—' : sgn(v) + ' pts', CAL_DEFAULTS.totAdj, 'Corrects a steady lean in pregame totals.')}
+    ${calRow('Outcome spread — pregame', 'disp', v => v == null ? '—' : typeof v === 'object' ? `margin ×${v.m.toFixed(2)} · total ×${v.t.toFixed(2)}` : `margin ×${(+v).toFixed(2)} · total ×${(CD && CD.disp && CD.disp.kT != null ? CD.disp.kT : CAL_DEFAULTS.dispTP).toFixed(2)}`, { m: CAL_DEFAULTS.dispMP, t: CAL_DEFAULTS.dispTP }, 'Tightens (×&lt;1) or widens (×&gt;1) the simulated results so win chances match how often bets really hit.')}
+    ${calRow('Outcome spread — from halftime', 'dispH', v => v == null ? '—' : `margin ×${v.m.toFixed(2)} · total ×${v.t.toFixed(2)}`, { m: CAL_DEFAULTS.dispMH, t: CAL_DEFAULTS.dispTH }, 'Same idea for live chances; blends in from the pregame values over the first half.')}
+    ${calRow('Outcome spread — 1st-half bets', 'dispH1', v => v == null ? '—' : `margin ×${v.m.toFixed(2)} · total ×${v.t.toFixed(2)}`, { m: CAL_DEFAULTS.dispH1M, t: CAL_DEFAULTS.dispH1T }, 'Same idea for first-half spreads and totals.')}
+    ${calRow('Live: weight on scoring so far', 'live', v => v == null ? '—' : `margin ${Math.round(v.m*100)}% · total ${Math.round(v.t*100)}%`, { m: CAL_DEFAULTS.wHalfM, t: CAL_DEFAULTS.wHalfT }, 'At halftime, how much the first half’s scoring changes the second-half projection (rest comes from the pregame number).')}
     </tbody></table><div class="note">A fitted value only replaces the default once its sample is large enough, so early-season noise can't throw the model off.</div></div>`;
   // ---- schedule spots
   const SP = CD && CD.spots;
